@@ -40,6 +40,7 @@ class VideolinkWebCamera(Camera):
     """A Videolink camera using the web console API and FLV preview stream."""
 
     _attr_has_entity_name = True
+    _attr_name = None
     _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(
@@ -53,12 +54,11 @@ class VideolinkWebCamera(Camera):
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         self._stream = entry.data.get(CONF_STREAM, DEFAULT_STREAM)
         self._rtsp_port = entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
-        self._attr_name = f"Channel {self._channel}"
         identifier = info.serial or f"{client.host}:{client.port}"
         self._attr_unique_id = f"{identifier}_channel_{self._channel}"
         self._attr_device_info = HADeviceInfo(
             identifiers={(DOMAIN, identifier)},
-            name=info.name,
+            name=entry.title,
             manufacturer="Videolink",
             model=info.model,
             sw_version=info.firmware,

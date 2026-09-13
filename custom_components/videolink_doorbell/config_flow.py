@@ -36,7 +36,13 @@ from .const import (
 class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle setup through the Home Assistant UI."""
 
-    VERSION = 2
+    VERSION = 3
+
+    @staticmethod
+    def _title(info: DeviceInfo, user_input: dict[str, Any]) -> str:
+        """Build a device title that distinguishes identical camera models."""
+        host = VideolinkClient._normalize_host(user_input[CONF_HOST])
+        return f"{info.name} ({host})"
 
     def _schema(self, defaults: dict[str, Any] | None = None) -> vol.Schema:
         """Build the camera configuration schema."""
@@ -108,7 +114,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(self._unique_id(info, user_input))
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=info.name, data=user_input)
+                return self.async_create_entry(
+                    title=self._title(info, user_input), data=user_input
+                )
 
         return self.async_show_form(
             step_id="user", data_schema=self._schema(), errors=errors
@@ -136,9 +144,14 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for other in self.hass.config_entries.async_entries(DOMAIN)
                 ):
                     return self.async_abort(reason="already_configured")
-                self.hass.config_entries.async_update_entry(entry, unique_id=unique_id)
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    unique_id=unique_id,
+                    title=self._title(info, user_input),
+                )
                 return self.async_update_reload_and_abort(
-                    entry, data_updates=user_input
+                    entry,
+                    data_updates=user_input,
                 )
         return self.async_show_form(
             step_id="reconfigure",
