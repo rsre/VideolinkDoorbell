@@ -38,7 +38,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(CARD_URL, str(CARD_PATH), True)]
     )
-    add_extra_js_url(hass, f"{CARD_URL}?v=0.12.2")
+    add_extra_js_url(hass, f"{CARD_URL}?v=0.12.3")
     return True
 
 
@@ -71,11 +71,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) 
         unique_id = entry.unique_id
         if unique_id is not None and not unique_id.endswith(f"_channel_{channel}"):
             updates["unique_id"] = f"{unique_id}_channel_{channel}"
-    if entry.version < 3:
+    if entry.version < 4:
         host = VideolinkClient._normalize_host(entry.data[CONF_HOST])
-        if not entry.title.endswith(f"({host})"):
-            updates["title"] = f"{entry.title} ({host})"
-        updates["version"] = 3
+        suffix = f" ({host})"
+        title = updates.get("title", entry.title)
+        if isinstance(title, str) and title.endswith(suffix):
+            updates["title"] = title[: -len(suffix)]
+        updates["version"] = 4
     if updates:
         hass.config_entries.async_update_entry(entry, **updates)
     return True
