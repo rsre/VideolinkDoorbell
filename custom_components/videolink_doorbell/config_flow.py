@@ -91,6 +91,18 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         device_id = info.serial or f"{normalized}:{user_input[CONF_PORT]}"
         return f"{device_id}_channel_{user_input[CONF_CHANNEL]}"
 
+    def _connection_is_configured(self, user_input: dict[str, Any]) -> bool:
+        """Detect an existing entry before a changing API serial can bypass it."""
+        host = VideolinkClient._normalize_host(user_input[CONF_HOST])
+        port = user_input[CONF_PORT]
+        channel = user_input[CONF_CHANNEL]
+        return any(
+            VideolinkClient._normalize_host(other.data[CONF_HOST]) == host
+            and other.data[CONF_PORT] == port
+            and other.data.get(CONF_CHANNEL, DEFAULT_CHANNEL) == channel
+            for other in self.hass.config_entries.async_entries(DOMAIN)
+        )
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -108,6 +120,8 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(self._unique_id(info, user_input))
                 self._abort_if_unique_id_configured()
+                if self._connection_is_configured(user_input):
+                    return self.async_abort(reason="already_configured")
                 return self.async_create_entry(title=info.name, data=user_input)
 
         return self.async_show_form(

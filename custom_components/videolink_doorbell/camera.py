@@ -25,6 +25,14 @@ from .go2rtc import get_streams_api
 _LOGGER = logging.getLogger(__name__)
 
 
+def device_identifier(unique_id: str, channel: int) -> str:
+    """Return the stable physical-device ID from a channel config-entry ID."""
+    suffix = f"_channel_{channel}"
+    if not unique_id.endswith(suffix):
+        raise ValueError(f"Invalid Videolink config-entry unique ID: {unique_id}")
+    return unique_id[: -len(suffix)]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry[VideolinkClient],
@@ -54,7 +62,9 @@ class VideolinkWebCamera(Camera):
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         self._stream = entry.data.get(CONF_STREAM, DEFAULT_STREAM)
         self._rtsp_port = entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
-        identifier = info.serial or f"{client.host}:{client.port}"
+        if entry.unique_id is None:
+            raise ValueError("Videolink config entry has no unique ID")
+        identifier = device_identifier(entry.unique_id, self._channel)
         self._attr_unique_id = f"{identifier}_channel_{self._channel}"
         self._attr_device_info = HADeviceInfo(
             identifiers={(DOMAIN, identifier)},
