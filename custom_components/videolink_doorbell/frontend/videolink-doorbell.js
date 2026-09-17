@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.14-native-talk1";
+const CARD_VERSION = "0.12.15-native-talk1";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -745,14 +745,13 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _playNativeMix(message) {
     this._nativePlaybackChain = this._nativePlaybackChain
-      .then(() => this._playNativeMixFrame(message))
+      .then(() => this._playNativeMixFrame(message?.pcm || message?.event?.pcm))
       .catch((error) => {
         this._diagnostics.nativeTalkError = error?.message || String(error);
       });
   }
 
-  async _playNativeMixFrame(message) {
-    const encoded = message?.event?.pcm;
+  async _playNativeMixFrame(encoded) {
     if (!encoded) return;
     try {
       const binary = atob(encoded);

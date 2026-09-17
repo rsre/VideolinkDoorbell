@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.15] - 2026-09-17
+
+### Fixed
+
+- Fixed native mix-audio playback handling for Home Assistant's unwrapped
+  WebSocket subscription event payloads.
+
 ## [0.12.14] - 2026-09-17
 
 ### Added
