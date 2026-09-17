@@ -27,8 +27,9 @@
       not accumulate into the audio cadence.
 - [ ] Add timestamps for capture, Home Assistant/WebSocket enqueue, TCP send,
       camera response, and audible playback.
-- [ ] Implement the SDK-equivalent mix-audio callback before selecting
-      `mixAudioStream`.
+- [x] Implement the SDK-equivalent mix-audio callback before selecting
+      `mixAudioStream`; receive, split, and AEC-process the far/near PCM
+      buffers while keeping control acknowledgements separate.
 - [ ] Wire the AEC-cleaned mix callback PCM into HA playback during native
       talk, while muting the duplicate WebRTC audio stream.
 - [x] Confirm native stop/close behavior and recovery after interruption;
