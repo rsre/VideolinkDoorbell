@@ -2,6 +2,16 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.5] - 2026-09-17
+
+### Changed
+
+- Reduced WebRTC backchannel latency by preferring camera-compatible G.711
+  codecs, requesting 10 ms audio packetization, and explicitly enabling the
+  RTSP backchannel.
+- Added WebRTC transport and codec diagnostics for separating browser/network
+  delay from camera-side speaker delay.
+
 ## [0.12.4] - 2026-09-17
 
 ### Fixed
