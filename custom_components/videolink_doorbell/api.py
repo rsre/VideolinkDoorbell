@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 try:
-    from .native_talk import NativeTalkSession, TalkConfig, encode_dvi4_pcm16le
+    from .native_talk import NativeTalkSession, TalkConfig
 except ImportError:  # Keep the standalone API test loader working.
     import importlib.util
     import sys
@@ -29,7 +29,6 @@ except ImportError:  # Keep the standalone API test loader working.
     _native_talk_spec.loader.exec_module(_native_talk_module)
     NativeTalkSession = _native_talk_module.NativeTalkSession
     TalkConfig = _native_talk_module.TalkConfig
-    encode_dvi4_pcm16le = _native_talk_module.encode_dvi4_pcm16le
 
 
 class VideolinkError(Exception):
@@ -318,7 +317,7 @@ class VideolinkClient:
         """Encode and send exactly one 1024-sample PCM talk frame."""
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
-        await self._native_talk.send_audio(encode_dvi4_pcm16le(pcm16le))
+        await self._native_talk.send_pcm(pcm16le)
 
     async def native_talk_stop(self) -> None:
         """Stop and close the experimental native talk path."""

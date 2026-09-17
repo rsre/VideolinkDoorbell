@@ -35,6 +35,14 @@ BCMEDIA_ADPCM_MAGIC = 0x62773130
 BCMEDIA_ADPCM_DATA_MAGIC = 0x0100
 XML_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
 
+
+def _xml_child_text(node: ElementTree.Element, name: str, default: str) -> str:
+    """Read a child value while tolerating namespace-qualified XML."""
+    for child in node.iter():
+        if child is not node and child.tag.rsplit("}", 1)[-1] == name and child.text:
+            return child.text
+    return default
+
 _IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8) * 2
 _IMA_STEP_TABLE = (
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
@@ -111,6 +119,32 @@ def encode_dvi4_pcm16le(pcm: bytes, *, byte_order: str = "<") -> bytes:
         raise ValueError("PCM16 data must contain complete samples")
     samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
     return encode_dvi4_block(samples, byte_order=byte_order)
+
+
+class Dvi4Encoder:
+    """Stateful IMA/DVI-4 encoder used by the camera talk stream."""
+
+    def __init__(self) -> None:
+        self.predictor = 0
+        self.index = 0
+
+    def encode_pcm16le(self, pcm: bytes) -> bytes:
+        if len(pcm) % 2:
+            raise ValueError("PCM16 data must contain complete samples")
+        samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+        if len(samples) < 2 or len(samples) % 2:
+            raise ValueError("DVI-4 blocks require an even number of samples >= 2")
+
+        encoded = bytearray(struct.pack("<hBB", self.predictor, self.index, 0))
+        for offset in range(0, len(samples), 2):
+            first, self.predictor, self.index = _ima_encode_nibble(
+                samples[offset], self.predictor, self.index
+            )
+            second, self.predictor, self.index = _ima_encode_nibble(
+                samples[offset + 1], self.predictor, self.index
+            )
+            encoded.append((first << 4) | second)
+        return bytes(encoded)
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,12 +344,19 @@ def serialize_talk_config_message(
 
 
 def serialize_talk_audio_message(
-    adpcm_data: bytes, *, msg_num: int, channel_id: int = 0, sequence: int = 0
+    adpcm_data: bytes,
+    *,
+    msg_num: int,
+    channel_id: int = 0,
+    sequence: int = 0,
+    encrypt_xml: Callable[[int, bytes], bytes] | None = None,
 ) -> bytes:
     """Build one binary MSG_ID_TALK message from a DVI-4 ADPCM block."""
     extension = XML_DECLARATION + (
         f'<Extension version="1.1"><channelId>{channel_id}</channelId><binaryData>1</binaryData></Extension>'.encode()
     )
+    if encrypt_xml is not None:
+        extension = encrypt_xml(channel_id, extension)
     return serialize_talk_message(
         msg_id=MSG_ID_TALK,
         msg_num=msg_num,
@@ -517,6 +558,7 @@ class NativeTalkSession:
         self._encryption_mode = 0
         self._logged_in = False
         self._audio_sequence = 0
+        self._audio_encoder = Dvi4Encoder()
         self.trace = trace
         self.max_encryption = max_encryption
 
@@ -653,14 +695,44 @@ class NativeTalkSession:
             raise PermissionError(f"camera rejected talk ability request: {header.response_code}")
         xml = self._xml_bytes(payload, key=self._aes_key)
         root = ElementTree.fromstring(xml)
-        talk = root.find("TalkAbility")
+        def local_name(tag: str) -> str:
+            return tag.rsplit("}", 1)[-1]
+
+        def children_named(node: ElementTree.Element, name: str) -> list[ElementTree.Element]:
+            return [child for child in node.iter() if local_name(child.tag) == name]
+
+        talk = next((node for node in root.iter() if local_name(node.tag) == "TalkAbility"), None)
         if talk is None:
-            raise ValueError("camera talk ability response did not contain TalkAbility")
-        duplexes = [node.text for node in talk.findall("./duplexList/duplex") if node.text]
-        modes = [node.text for node in talk.findall("./audioStreamModeList/audioStreamMode") if node.text]
-        configs = talk.findall("./audioConfigList/audioConfig")
+            tags = ",".join(local_name(node.tag) for node in root.iter())
+            snippet = xml[:240].decode(errors="replace")
+            # This doorbell's firmware routes the generic XML command 10 to
+            # VideoInput instead of exposing the native BCSDK talk ability.
+            # The APK's BCSDK path uses command 2157 and supplies the same
+            # profile below to its talk opener.  The profile has been verified
+            # by the accepted config/audio path on this model.
+            if "VideoInput" in tags:
+                self._trace(
+                    "talk ability: camera returned VideoInput for generic XML "
+                    "query; using verified native doorbell profile"
+                )
+                return TalkAbility()
+            raise ValueError(
+                f"camera talk ability response did not contain TalkAbility "
+                f"(root={local_name(root.tag)}, tags={tags}, xml={snippet!r})"
+            )
+        duplexes = [node.text for node in children_named(talk, "duplex") if node.text]
+        modes = [node.text for node in children_named(talk, "audioStreamMode") if node.text]
+        configs = [node for node in children_named(talk, "audioConfig")]
         selected = next(
-            (config for config in configs if config.findtext("audioType") == "adpcm"),
+            (
+                config
+                for config in configs
+                if next(
+                    (node.text for node in children_named(config, "audioType") if node.text),
+                    "",
+                )
+                == "adpcm"
+            ),
             None,
         )
         if selected is None:
@@ -670,10 +742,12 @@ class NativeTalkSession:
             duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
             audio_stream_mode="speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"),
             audio_type="adpcm",
-            sample_rate=int(selected.findtext("sampleRate", str(SAMPLE_RATE))),
-            sample_precision=int(selected.findtext("samplePrecision", "16")),
-            length_per_encoder=int(selected.findtext("lengthPerEncoder", str(SAMPLES_PER_FRAME))),
-            sound_track=selected.findtext("soundTrack", "mono"),
+            sample_rate=int(_xml_child_text(selected, "sampleRate", str(SAMPLE_RATE))),
+            sample_precision=int(_xml_child_text(selected, "samplePrecision", "16")),
+            length_per_encoder=int(
+                _xml_child_text(selected, "lengthPerEncoder", str(SAMPLES_PER_FRAME))
+            ),
+            sound_track=_xml_child_text(selected, "soundTrack", "mono"),
         )
 
     async def send_audio(self, adpcm_data: bytes) -> None:
@@ -687,8 +761,13 @@ class NativeTalkSession:
                 msg_num=self.client.next_message_number(),
                 channel_id=self.channel,
                 sequence=self._audio_sequence,
+                encrypt_xml=self._encrypt_xml,
             )
         )
+
+    async def send_pcm(self, pcm16le: bytes) -> None:
+        """Encode and send one PCM talk frame using continuous DVI-4 state."""
+        await self.send_audio(self._audio_encoder.encode_pcm16le(pcm16le))
 
     async def stop_talk(self) -> None:
         """Send the native talk reset command."""
@@ -706,5 +785,5 @@ class NativeTalkSession:
             )
         )
         header, _, _ = await self.client.receive()
-        if header.response_code not in (200, 422):
+        if header.response_code not in (200, 421, 422):
             raise PermissionError(f"camera rejected talk stop: {header.response_code}")

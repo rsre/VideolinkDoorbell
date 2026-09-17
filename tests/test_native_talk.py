@@ -48,6 +48,17 @@ def test_dvi4_encoder_rejects_invalid_pcm() -> None:
         native_talk.encode_dvi4_pcm16le(b"\x00")
 
 
+def test_stateful_dvi4_encoder_carries_predictor_between_blocks() -> None:
+    first = b"\x10\x27" * 1024
+    second = b"\xff\x7f" * 1024
+    encoder = native_talk.Dvi4Encoder()
+    first_block = encoder.encode_pcm16le(first)
+    second_block = encoder.encode_pcm16le(second)
+    assert len(first_block) == 516
+    assert len(second_block) == 516
+    assert int.from_bytes(second_block[:2], "little", signed=True) != 0
+
+
 def test_adpcm_media_has_baichuan_header_and_alignment() -> None:
     media = native_talk.serialize_adpcm_media(b"\x00\x00\x00\x00" + b"\x55" * 508)
     assert media[:4] == b"0\x31wb"
@@ -71,6 +82,23 @@ def test_talk_audio_message_contains_binary_media() -> None:
     assert int.from_bytes(message[4:8], "little") == native_talk.MSG_ID_TALK
     assert b"<binaryData>1</binaryData>" in message
     assert b"0\x31wb" in message
+
+
+def test_talk_audio_extension_can_be_encrypted() -> None:
+    message = native_talk.serialize_talk_audio_message(
+        b"\x00" * 516,
+        msg_num=8,
+        encrypt_xml=lambda _channel, payload: b"X" * len(payload),
+    )
+    assert message[24:149] == b"X" * 125
+
+
+def test_default_talk_profile_matches_doorbell_fallback() -> None:
+    profile = native_talk.TalkAbility()
+    assert profile.sample_rate == 16_000
+    assert profile.sample_precision == 16
+    assert profile.length_per_encoder == 1_024
+    assert profile.sound_track == "mono"
 
 
 def test_modern_login_digests_and_bc_encrypt() -> None:

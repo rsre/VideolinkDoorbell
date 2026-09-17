@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 
-from native_talk import NativeTalkSession, encode_dvi4_pcm16le  # noqa: E402
+from native_talk import NativeTalkSession  # noqa: E402
 
 
 async def probe(args: argparse.Namespace) -> int:
@@ -53,7 +53,7 @@ async def probe(args: argparse.Namespace) -> int:
                 samples += [0] * (block_size - (len(samples) % block_size))
             for offset in range(0, len(samples), block_size):
                 block = struct.pack(f"<{block_size}h", *samples[offset : offset + block_size])
-                await session.send_audio(encode_dvi4_pcm16le(block))
+                await session.send_pcm(block)
                 await asyncio.sleep(block_size / config.sample_rate)
             print(f"Audio sent: {len(samples)} samples")
         return 0
