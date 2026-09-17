@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.8";
+const CARD_VERSION = "0.12.9";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -707,7 +707,11 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.outboundPackets = outbound?.packetsSent;
       this._diagnostics.outboundBytes = outbound?.bytesSent;
       this._diagnostics.codec = codec?.mimeType;
+      this._diagnostics.codecClockRate = codec?.clockRate;
+      this._diagnostics.codecChannels = codec?.channels;
       this._diagnostics.outboundCodec = outboundCodec?.mimeType;
+      this._diagnostics.outboundCodecClockRate = outboundCodec?.clockRate;
+      this._diagnostics.outboundCodecChannels = outboundCodec?.channels;
       this._updateDiagnosticsView();
     } catch (error) {
       this._diagnostics.statsError = error?.message || String(error);
@@ -721,6 +725,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (!this._diagnosticsOutput) return;
     const ms = (value) => value == null ? "waiting" : `${value.toFixed(1)} ms`;
     const value = (item) => item == null ? "waiting" : String(item);
+    const codec = (name, clockRate, channels) => {
+      if (name == null) return "waiting";
+      const rate = clockRate == null ? "?" : `${clockRate}`;
+      const channelCount = channels == null ? "?" : `${channels}`;
+      return `${name}/${rate}/${channelCount}`;
+    };
     this._diagnosticsOutput.textContent = [
       `Phase: ${this._diagnostics.phase || "idle"}`,
       `WebRTC connect: ${ms(this._diagnostics.connectMs)}`,
@@ -731,8 +741,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Inbound jitter buffer: ${ms(this._diagnostics.jitterBufferMs)}`,
       `Inbound audio: ${value(this._diagnostics.inboundPackets)} packets, ${value(this._diagnostics.inboundLost)} lost`,
       `Outbound audio: ${value(this._diagnostics.outboundPackets)} packets, ${value(this._diagnostics.outboundBytes)} bytes`,
-      `Inbound codec: ${value(this._diagnostics.codec)}`,
-      `Outbound codec/backchannel: ${value(this._diagnostics.outboundCodec)}`,
+      `Inbound codec: ${codec(this._diagnostics.codec, this._diagnostics.codecClockRate, this._diagnostics.codecChannels)}`,
+      `Outbound codec/backchannel: ${codec(this._diagnostics.outboundCodec, this._diagnostics.outboundCodecClockRate, this._diagnostics.outboundCodecChannels)}`,
       "Camera/RTSP speaker delay: not exposed by WebRTC stats",
       `Mic permission: ${ms(this._diagnostics.micPermissionMs)}`,
       `PTT to track attached: ${ms(this._diagnostics.trackAttachMs)}`,

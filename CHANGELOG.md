@@ -2,6 +2,15 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.9] - 2026-09-17
+
+### Added
+
+- Added inbound and outbound WebRTC audio codec clock-rate and channel-count
+  diagnostics to distinguish the browser leg from the camera-facing leg.
+- Preserved the unpacked Reolink firmware payloads and audio/backchannel findings
+  under `firmware/`.
+
 ## [0.12.8] - 2026-09-17
 
 ### Changed
