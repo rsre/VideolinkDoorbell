@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.16] - 2026-09-17
+
+### Fixed
+
+- Fixed native talk startup by separating the open command response from the
+  subsequent mix-audio event subscription, preventing frontend reloads caused
+  by interleaved WebSocket messages.
+
 ## [0.12.15] - 2026-09-17
 
 ### Fixed

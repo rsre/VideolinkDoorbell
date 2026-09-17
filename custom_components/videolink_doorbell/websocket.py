@@ -48,33 +48,13 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
     try:
         action = msg["action"]
         if action == "start":
-            subscription_id = msg["id"]
-
-            def on_mix_frame(frame) -> None:
-                try:
-                    connection.send_message({
-                        "id": subscription_id,
-                        "type": "event",
-                        "event": {
-                            "type": "videolink_doorbell/native_talk_mix",
-                            "pcm": base64.b64encode(frame.cleaned_near_end or b"").decode(),
-                        },
-                    })
-                except Exception:
-                    return
-
-            await client.native_talk_start(
-                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
-                mix_frame_callback=on_mix_frame,
-            )
+            await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
         elif action == "audio":
             pcm = _decode_pcm(msg.get("pcm"))
             await client.native_talk_audio(pcm)
         elif action == "stop":
             await client.native_talk_stop()
         else:
-            # Kept for clients from the previous implementation. New clients
-            # attach the callback as part of the start/open operation above.
             subscription_id = msg["id"]
 
             def on_mix_frame(frame) -> None:

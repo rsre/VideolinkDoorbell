@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.15-native-talk1";
+const CARD_VERSION = "0.12.16-native-talk1";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -562,11 +562,16 @@ class VideolinkDoorbellCard extends HTMLElement {
         return;
       }
       if (this._config.native_talk) {
+        await this._hass.callWS({
+          type: "videolink_doorbell/native_talk",
+          action: "start",
+          entity_id: this._config.entity,
+        });
         this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
           (message) => this._playNativeMix(message),
           {
             type: "videolink_doorbell/native_talk",
-            action: "start",
+            action: "subscribe",
             entity_id: this._config.entity,
           },
         );
