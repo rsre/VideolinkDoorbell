@@ -22,6 +22,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeGain = undefined;
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
+    this._nativeFrameCount = 0;
+    this._nativeLastCaptureAt = undefined;
     this._nativeTalking = false;
     this._sessionId = undefined;
     this._pendingCandidates = [];
@@ -650,6 +652,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeGain = gain;
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
+    this._nativeFrameCount = 0;
+    this._nativeLastCaptureAt = undefined;
     this._nativeTalking = true;
     processor.onaudioprocess = (event) => {
       if (!this._nativeTalking) return;
@@ -664,6 +668,13 @@ class VideolinkDoorbellCard extends HTMLElement {
           pcm[index] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
         }
         this._nativePcm.splice(0, needed);
+        const capturedAt = performance.now();
+        this._nativeFrameCount += 1;
+        this._diagnostics.nativeFrames = this._nativeFrameCount;
+        if (this._nativeLastCaptureAt !== undefined) {
+          this._diagnostics.nativeCallbackIntervalMs = capturedAt - this._nativeLastCaptureAt;
+        }
+        this._nativeLastCaptureAt = capturedAt;
         const bytes = new Uint8Array(pcm.buffer);
         let binary = "";
         for (let index = 0; index < bytes.length; index += 0x8000) {
@@ -671,12 +682,18 @@ class VideolinkDoorbellCard extends HTMLElement {
         }
         const encoded = btoa(binary);
         this._nativeSendChain = this._nativeSendChain
-          .then(() => this._hass.callWS({
+          .then(() => {
+            this._diagnostics.nativeQueueWaitMs = performance.now() - capturedAt;
+            const sentAt = performance.now();
+            return this._hass.callWS({
             type: "videolink_doorbell/native_talk",
             action: "audio",
             entity_id: this._config.entity,
             pcm: encoded,
-          }))
+            }).then(() => {
+              this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
+            });
+          })
           .catch((error) => {
             this._diagnostics.nativeTalkError = error?.message || String(error);
           });
@@ -838,6 +855,10 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Track assignment: ${ms(this._diagnostics.trackAttachMs == null || this._diagnostics.micPermissionMs == null
         ? undefined : this._diagnostics.trackAttachMs - this._diagnostics.micPermissionMs)}`,
       `Track attached to first packet: ${ms(this._diagnostics.firstOutboundPacketMs)}`,
+      `Native audio frames: ${value(this._diagnostics.nativeFrames)}`,
+      `Native capture interval: ${ms(this._diagnostics.nativeCallbackIntervalMs)}`,
+      `Native queue wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
+      `Native WebSocket ack: ${ms(this._diagnostics.nativeWsAckMs)}`,
       this._diagnostics.microphoneError ? `Microphone error: ${this._diagnostics.microphoneError}` : "",
       this._diagnostics.statsError ? `Stats error: ${this._diagnostics.statsError}` : "",
     ].filter(Boolean).join("\n");
