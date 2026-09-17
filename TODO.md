@@ -29,6 +29,8 @@
       camera response, and audible playback.
 - [ ] Implement the SDK-equivalent mix-audio callback before selecting
       `mixAudioStream`.
+- [ ] Wire the AEC-cleaned mix callback PCM into HA playback during native
+      talk, while muting the duplicate WebRTC audio stream.
 - [ ] Confirm native stop/close behavior and recovery after interruption.
 
 ## Verification rule
