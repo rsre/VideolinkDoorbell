@@ -342,13 +342,15 @@ class VideolinkDoorbellCard extends HTMLElement {
         }
       };
 
-      this._audioSender = peer.addTransceiver("audio", { direction: "sendrecv" }).sender;
+      const audioTransceiver = peer.addTransceiver("audio", { direction: "sendrecv" });
+      this._preferLowLatencyAudio(audioTransceiver);
+      this._audioSender = audioTransceiver.sender;
       if (!this._audioOnly) peer.addTransceiver("video", { direction: "recvonly" });
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: !this._audioOnly,
       });
-      await peer.setLocalDescription(offer);
+      await peer.setLocalDescription(this._setLowLatencyAudioPacketization(offer));
       if (!this._isCurrentConnection(generation) || this._peer !== peer) {
         peer.close();
         return;
@@ -361,7 +363,11 @@ class VideolinkDoorbellCard extends HTMLElement {
             this._scheduleReconnect();
           }
         }),
-        { type: "camera/webrtc/offer", entity_id: this._config.entity, offer: offer.sdp }
+        {
+          type: "camera/webrtc/offer",
+          entity_id: this._config.entity,
+          offer: peer.localDescription?.sdp || offer.sdp,
+        }
       );
     } catch (error) {
       if (generation === this._connectionGeneration) {
@@ -372,6 +378,39 @@ class VideolinkDoorbellCard extends HTMLElement {
     } finally {
       if (this._startingGeneration === generation) this._startingGeneration = undefined;
     }
+  }
+
+  _preferLowLatencyAudio(transceiver) {
+    const getCapabilities = globalThis.RTCRtpReceiver?.getCapabilities;
+    if (!getCapabilities || !transceiver.setCodecPreferences) return;
+    const codecs = getCapabilities("audio")?.codecs;
+    if (!codecs?.length) return;
+    const lowLatency = codecs.filter((codec) => /audio\/(PCMU|PCMA)$/i.test(codec.mimeType));
+    if (!lowLatency.length) return;
+    const remaining = codecs.filter((codec) => !lowLatency.includes(codec));
+    try {
+      // Prefer G.711 for the camera backchannel. It avoids an Opus↔G.711
+      // transcode when the ONVIF speaker advertises PCMU/PCMA, while retaining
+      // the other browser codecs as fallbacks.
+      transceiver.setCodecPreferences([...lowLatency, ...remaining]);
+    } catch {
+      // Older browsers may expose capabilities but reject this preference list.
+    }
+  }
+
+  _setLowLatencyAudioPacketization(offer) {
+    if (!offer?.sdp) return offer;
+    const lines = offer.sdp.split("\\r\\n");
+    const audioIndex = lines.findIndex((line) => line.startsWith("m=audio "));
+    if (audioIndex < 0) return offer;
+    const nextMediaIndex = lines.findIndex(
+      (line, index) => index > audioIndex && line.startsWith("m="),
+    );
+    const audioEnd = nextMediaIndex < 0 ? lines.length : nextMediaIndex;
+    if (!lines.slice(audioIndex, audioEnd).some((line) => line.startsWith("a=ptime:"))) {
+      lines.splice(audioEnd, 0, "a=ptime:10");
+    }
+    return { ...offer, sdp: lines.join("\\r\\n") };
   }
 
   async _handleSignal(event, generation) {
@@ -499,7 +538,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talkRequested = false;
     this._micStream?.getTracks().forEach((track) => track.stop());
     const sender = this._audioSender;
-    this._micStream = undefined;
     this._talking = false;
     this._micPending = false;
     this._mutedBeforeTalk = undefined;
@@ -510,6 +548,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._soundButton) this._soundButton.disabled = false;
     this._updateSoundButton();
     this._updateTalkButton();
+    this._micStream = undefined;
     if (sender) await sender.replaceTrack(null).catch(() => undefined);
   }
 
@@ -574,25 +613,34 @@ class VideolinkDoorbellCard extends HTMLElement {
       const reports = [...stats.values()];
       const inbound = reports.find((report) => report.type === "inbound-rtp" && (report.kind || report.mediaType) === "audio");
       const outbound = reports.find((report) => report.type === "outbound-rtp" && (report.kind || report.mediaType) === "audio");
+      const remoteInbound = reports.find((report) => report.type === "remote-inbound-rtp" && (report.kind || report.mediaType) === "audio");
       const transport = reports.find((report) => report.type === "transport" && report.selectedCandidatePairId);
       const pair = stats.get(transport?.selectedCandidatePairId)
         || reports.find((report) => report.type === "candidate-pair" && report.state === "succeeded" && report.nominated);
       const codec = inbound && stats.get(inbound.codecId);
+      const outboundCodec = outbound && stats.get(outbound.codecId);
       const packetsSent = outbound?.packetsSent || 0;
       if (this._diagnostics.trackAttachedAt !== undefined && this._diagnostics.firstOutboundPacketMs === undefined
           && packetsSent > (this._outboundPacketsAtAttach || 0)) {
         this._diagnostics.firstOutboundPacketMs = performance.now() - this._diagnostics.trackAttachedAt;
       }
       this._diagnostics.rttMs = pair?.currentRoundTripTime == null ? undefined : pair.currentRoundTripTime * 1000;
+      this._diagnostics.remoteInboundRttMs = remoteInbound?.roundTripTime == null
+        ? undefined : remoteInbound.roundTripTime * 1000;
       this._diagnostics.inboundJitterMs = inbound?.jitter == null ? undefined : inbound.jitter * 1000;
       this._diagnostics.jitterBufferMs = inbound?.jitterBufferEmittedCount
         ? inbound.jitterBufferDelay * 1000 / inbound.jitterBufferEmittedCount
         : undefined;
+      const transportRttMs = this._diagnostics.remoteInboundRttMs ?? this._diagnostics.rttMs;
+      this._diagnostics.webrtcAudioBudgetMs = transportRttMs == null
+        ? undefined
+        : transportRttMs / 2 + 10 + (this._diagnostics.jitterBufferMs || 0);
       this._diagnostics.inboundPackets = inbound?.packetsReceived;
       this._diagnostics.inboundLost = inbound?.packetsLost;
       this._diagnostics.outboundPackets = outbound?.packetsSent;
       this._diagnostics.outboundBytes = outbound?.bytesSent;
       this._diagnostics.codec = codec?.mimeType;
+      this._diagnostics.outboundCodec = outboundCodec?.mimeType;
       this._updateDiagnosticsView();
     } catch (error) {
       this._diagnostics.statsError = error?.message || String(error);
@@ -610,11 +658,15 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Phase: ${this._diagnostics.phase || "idle"}`,
       `WebRTC connect: ${ms(this._diagnostics.connectMs)}`,
       `WebRTC RTT: ${ms(this._diagnostics.rttMs)}`,
+      `Remote inbound RTT: ${ms(this._diagnostics.remoteInboundRttMs)}`,
+      `Estimated browser/WebRTC audio budget: ${ms(this._diagnostics.webrtcAudioBudgetMs)}`,
       `Inbound jitter: ${ms(this._diagnostics.inboundJitterMs)}`,
       `Inbound jitter buffer: ${ms(this._diagnostics.jitterBufferMs)}`,
       `Inbound audio: ${value(this._diagnostics.inboundPackets)} packets, ${value(this._diagnostics.inboundLost)} lost`,
       `Outbound audio: ${value(this._diagnostics.outboundPackets)} packets, ${value(this._diagnostics.outboundBytes)} bytes`,
       `Inbound codec: ${value(this._diagnostics.codec)}`,
+      `Outbound codec/backchannel: ${value(this._diagnostics.outboundCodec)}`,
+      "Camera/RTSP speaker delay: not exposed by WebRTC stats",
       `Mic permission: ${ms(this._diagnostics.micPermissionMs)}`,
       `PTT to track attached: ${ms(this._diagnostics.trackAttachMs)}`,
       `Track assignment: ${ms(this._diagnostics.trackAttachMs == null || this._diagnostics.micPermissionMs == null

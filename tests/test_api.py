@@ -47,6 +47,13 @@ def test_normalize_host_rejects_invalid_values(value: str) -> None:
         api.VideolinkClient._normalize_host(value)
 
 
+def test_rtsp_backchannel_url_explicitly_requests_onvif_backchannel() -> None:
+    client = api.VideolinkClient(object(), "camera.local", "user", "password")
+    assert client.rtsp_backchannel_url(0, "main", 554).endswith(
+        "/h264Preview_01_main#backchannel=1"
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_token_requests_share_one_login() -> None:
     class Client(api.VideolinkClient):
