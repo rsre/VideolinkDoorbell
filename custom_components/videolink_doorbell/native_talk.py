@@ -639,8 +639,15 @@ class NativeTalkSession:
         self._logged_in = True
 
     async def close(self) -> None:
-        await self.client.close()
-        self._logged_in = False
+        try:
+            await self.client.close()
+        except (ConnectionResetError, BrokenPipeError):
+            # The camera may reset the socket after rejecting a talk packet.
+            # Preserve the original protocol error instead of masking it while
+            # cleaning up the probe/session.
+            pass
+        finally:
+            self._logged_in = False
 
     def _encrypt_xml(self, offset: int, payload: bytes) -> bytes:
         if self._encryption_mode in (0x02, 0x12):
