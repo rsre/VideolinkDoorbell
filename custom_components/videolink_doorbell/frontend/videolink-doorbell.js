@@ -562,16 +562,11 @@ class VideolinkDoorbellCard extends HTMLElement {
         return;
       }
       if (this._config.native_talk) {
-        await this._hass.callWS({
-          type: "videolink_doorbell/native_talk",
-          action: "start",
-          entity_id: this._config.entity,
-        });
         this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
           (message) => this._playNativeMix(message),
           {
             type: "videolink_doorbell/native_talk",
-            action: "subscribe",
+            action: "start",
             entity_id: this._config.entity,
           },
         );

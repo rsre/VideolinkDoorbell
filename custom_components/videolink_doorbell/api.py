@@ -297,12 +297,16 @@ class VideolinkClient:
             f"h264Preview_{channel + 1:02d}_{stream}#backchannel=1#transport=udp"
         )
 
-    async def native_talk_start(self, channel: int) -> None:
+    async def native_talk_start(self, channel: int, *, mix_frame_callback=None) -> None:
         """Open and configure the experimental native Baichuan talk path."""
         async with self._native_talk_lock:
             if self._native_talk is None:
                 self._native_talk = NativeTalkSession(
-                    self.host, self.username, self.password, channel=channel
+                    self.host,
+                    self.username,
+                    self.password,
+                    channel=channel,
+                    mix_frame_callback=mix_frame_callback,
                 )
                 try:
                     await self._native_talk.login()
