@@ -90,6 +90,19 @@ def test_baichuan_message_parser_handles_modern_header() -> None:
     assert payload.startswith(b"<body")
 
 
+def test_modern_header_can_be_inspected_from_twenty_byte_prefix() -> None:
+    message = native_talk.serialize_talk_message(
+        msg_id=202,
+        msg_num=1,
+        extension=b"<Extension />",
+        payload=b"payload",
+    )
+    header = native_talk.parse_baichuan_header(message[:20])
+    assert header.message_class == native_talk.BC_CLASS_MODERN_24
+    assert header.header_length == 24
+    assert header.payload_offset is None
+
+
 def test_login_upgrade_is_a_20_byte_header() -> None:
     message = native_talk.serialize_login_upgrade(message_number=3)
     assert len(message) == 20

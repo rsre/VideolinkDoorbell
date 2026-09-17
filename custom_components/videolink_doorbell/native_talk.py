@@ -355,7 +355,7 @@ class BaichuanHeader:
 
     @property
     def header_length(self) -> int:
-        return 24 if self.payload_offset is not None else 20
+        return 24 if self.message_class in (BC_CLASS_MODERN_24, 0) else 20
 
 
 def parse_baichuan_header(data: bytes) -> BaichuanHeader:
@@ -369,11 +369,9 @@ def parse_baichuan_header(data: bytes) -> BaichuanHeader:
     channel_id, stream_type, message_number, response_code, message_class = struct.unpack_from(
         "<BBHHH", data, 12
     )
-    payload_offset = (
-        struct.unpack_from("<I", data, 20)[0]
-        if message_class in (BC_CLASS_MODERN_24, 0)
-        else None
-    )
+    payload_offset = None
+    if message_class in (BC_CLASS_MODERN_24, 0) and len(data) >= 24:
+        payload_offset = struct.unpack_from("<I", data, 20)[0]
     return BaichuanHeader(
         message_id,
         body_length,
