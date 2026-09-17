@@ -59,6 +59,18 @@ def test_stateful_dvi4_encoder_carries_predictor_between_blocks() -> None:
     assert int.from_bytes(second_block[:2], "little", signed=True) != 0
 
 
+def test_stateful_dvi4_block_header_matches_encoder_state() -> None:
+    encoder = native_talk.Dvi4Encoder()
+    first_pcm = b"\x00\x20" * 1024
+    second_pcm = b"\x00\xe0" * 1024
+    first = encoder.encode_pcm16le(first_pcm)
+    predictor, index = encoder.predictor, encoder.index
+    second = encoder.encode_pcm16le(second_pcm)
+    assert int.from_bytes(second[:2], "little", signed=True) == predictor
+    assert second[2] == index
+    assert len(first) == len(second) == 516
+
+
 def test_adpcm_media_has_baichuan_header_and_alignment() -> None:
     media = native_talk.serialize_adpcm_media(b"\x00\x00\x00\x00" + b"\x55" * 508)
     assert media[:4] == b"0\x31wb"

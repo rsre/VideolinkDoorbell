@@ -18,6 +18,8 @@
       predictor.
 - [ ] Verify ADPCM predictor/index state across consecutive 1024-sample
       frames.
+- [x] Add an independent regression test confirming consecutive DVI-4 blocks
+      carry the encoder's predictor/index state into the next block header.
 - [ ] Measure microphone callback cadence and packet arrival cadence.
 - [ ] Add timestamps for capture, Home Assistant/WebSocket enqueue, TCP send,
       camera response, and audible playback.
