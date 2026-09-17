@@ -27,7 +27,7 @@ def async_register(hass: HomeAssistant) -> None:
 @websocket_api.websocket_command(
     {
         vol.Required("type"): COMMAND,
-        vol.Required("action"): vol.In({"start", "audio", "stop"}),
+        vol.Required("action"): vol.In({"start", "audio", "stop", "subscribe"}),
         vol.Required("entity_id"): cv.entity_id,
         vol.Optional("pcm"): str,
     }
@@ -52,8 +52,25 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         elif action == "audio":
             pcm = _decode_pcm(msg.get("pcm"))
             await client.native_talk_audio(pcm)
-        else:
+        elif action == "stop":
             await client.native_talk_stop()
+        else:
+            subscription_id = msg["id"]
+
+            def on_mix_frame(frame) -> None:
+                try:
+                    connection.send_message({
+                        "id": subscription_id,
+                        "type": "event",
+                        "event": {
+                            "type": "videolink_doorbell/native_talk_mix",
+                            "pcm": base64.b64encode(frame.cleaned_near_end or b"").decode(),
+                        },
+                    })
+                except Exception:
+                    return
+
+            await client.native_talk_set_mix_callback(on_mix_frame)
     except (ValueError, binascii.Error) as err:
         connection.send_error(msg["id"], "invalid_format", str(err))
         return

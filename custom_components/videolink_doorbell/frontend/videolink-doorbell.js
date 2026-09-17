@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.10-native-talk1";
+const CARD_VERSION = "0.12.10-native-talk2";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -20,6 +20,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSource = undefined;
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
+    this._nativePlaybackContext = undefined;
+    this._nativePlaybackNextTime = 0;
+    this._nativePlaybackChain = Promise.resolve();
+    this._nativeMixUnsubscribe = undefined;
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
     this._nativeFrameCount = 0;
@@ -563,6 +567,14 @@ class VideolinkDoorbellCard extends HTMLElement {
           action: "start",
           entity_id: this._config.entity,
         });
+        this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
+          (message) => this._playNativeMix(message),
+          {
+            type: "videolink_doorbell/native_talk",
+            action: "subscribe",
+            entity_id: this._config.entity,
+          },
+        );
         await this._startNativeTalkCapture(this._micStream);
       } else if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
         this._microphoneSource = this._keepaliveContext.createMediaStreamSource(this._micStream);
@@ -620,7 +632,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._microphoneSource?.disconnect();
     this._microphoneSource = undefined;
-    if (this._nativeTalking) await this._stopNativeTalkCapture();
+    if (this._nativeTalking || this._nativeMixUnsubscribe || this._nativeContext) {
+      await this._stopNativeTalkCapture();
+    }
     this._micStream?.getTracks().forEach((track) => track.stop());
     const sender = this._audioSender;
     this._talking = false;
@@ -709,6 +723,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeProcessor?.disconnect();
     this._nativeSource?.disconnect();
     this._nativeGain?.disconnect();
+    if (this._nativeMixUnsubscribe) {
+      this._nativeMixUnsubscribe();
+      this._nativeMixUnsubscribe = undefined;
+    }
     await this._nativeSendChain.catch(() => undefined);
     await this._hass.callWS({
       type: "videolink_doorbell/native_talk",
@@ -718,11 +736,52 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.nativeTalkError = error?.message || String(error);
     });
     if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
+    await this._nativePlaybackChain.catch(() => undefined);
+    if (this._nativePlaybackContext) await this._nativePlaybackContext.close().catch(() => undefined);
     this._nativeContext = undefined;
     this._nativeSource = undefined;
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
+    this._nativePlaybackContext = undefined;
+    this._nativePlaybackNextTime = 0;
+    this._nativePlaybackChain = Promise.resolve();
     this._nativePcm = [];
+  }
+
+  _playNativeMix(message) {
+    this._nativePlaybackChain = this._nativePlaybackChain
+      .then(() => this._playNativeMixFrame(message))
+      .catch((error) => {
+        this._diagnostics.nativeTalkError = error?.message || String(error);
+      });
+  }
+
+  async _playNativeMixFrame(message) {
+    const encoded = message?.event?.pcm;
+    if (!encoded) return;
+    try {
+      const binary = atob(encoded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      if (bytes.length % 2 === 1) return;
+      const samples = new Int16Array(bytes.buffer);
+      if (!this._nativePlaybackContext) {
+        this._nativePlaybackContext = new AudioContext({ sampleRate: 16000 });
+        await this._nativePlaybackContext.resume();
+        this._nativePlaybackNextTime = this._nativePlaybackContext.currentTime;
+      }
+      const context = this._nativePlaybackContext;
+      const buffer = context.createBuffer(1, samples.length, 16000);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < samples.length; index++) channel[index] = samples[index] / 32768;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      const start = Math.max(context.currentTime, this._nativePlaybackNextTime);
+      source.start(start);
+      this._nativePlaybackNextTime = start + buffer.duration;
+    } catch (error) {
+      this._diagnostics.nativeTalkError = error?.message || String(error);
+    }
   }
 
   _toggleSound = () => {

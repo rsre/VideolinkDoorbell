@@ -319,6 +319,12 @@ class VideolinkClient:
             raise VideolinkConnectionError("Native talk session is not active")
         await self._native_talk.send_pcm(pcm16le)
 
+    async def native_talk_set_mix_callback(self, callback) -> None:
+        """Set the consumer for cleaned native mix audio."""
+        if self._native_talk is None:
+            raise VideolinkConnectionError("Native talk session is not active")
+        self._native_talk.mix_frame_callback = callback
+
     async def native_talk_stop(self) -> None:
         """Stop and close the experimental native talk path."""
         async with self._native_talk_lock:
