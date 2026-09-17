@@ -12,6 +12,25 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
+try:
+    from .native_talk import NativeTalkSession, TalkConfig, encode_dvi4_pcm16le
+except ImportError:  # Keep the standalone API test loader working.
+    import importlib.util
+    import sys
+
+    _native_talk_path = __file__.replace("api.py", "native_talk.py")
+    _native_talk_spec = importlib.util.spec_from_file_location(
+        "videolink_native_talk_under_test", _native_talk_path
+    )
+    if _native_talk_spec is None or _native_talk_spec.loader is None:
+        raise
+    _native_talk_module = importlib.util.module_from_spec(_native_talk_spec)
+    sys.modules[_native_talk_spec.name] = _native_talk_module
+    _native_talk_spec.loader.exec_module(_native_talk_module)
+    NativeTalkSession = _native_talk_module.NativeTalkSession
+    TalkConfig = _native_talk_module.TalkConfig
+    encode_dvi4_pcm16le = _native_talk_module.encode_dvi4_pcm16le
+
 
 class VideolinkError(Exception):
     """Base Videolink client error."""
@@ -60,6 +79,8 @@ class VideolinkClient:
         self._token_expires = datetime.min.replace(tzinfo=timezone.utc)
         self._rtmp_port: int | None = None
         self._login_lock = asyncio.Lock()
+        self._native_talk: NativeTalkSession | None = None
+        self._native_talk_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_host(host: str) -> str:
@@ -276,3 +297,36 @@ class VideolinkClient:
             f"rtsp://{username}:{password}@{self.url_host}:{rtsp_port}/"
             f"h264Preview_{channel + 1:02d}_{stream}#backchannel=1#transport=udp"
         )
+
+    async def native_talk_start(self, channel: int) -> None:
+        """Open and configure the experimental native Baichuan talk path."""
+        async with self._native_talk_lock:
+            if self._native_talk is None:
+                self._native_talk = NativeTalkSession(
+                    self.host, self.username, self.password, channel=channel
+                )
+                try:
+                    await self._native_talk.login()
+                    await self._native_talk.configure_talk(
+                        TalkConfig(channel_id=channel)
+                    )
+                except Exception:
+                    await self._native_talk.close()
+                    self._native_talk = None
+                    raise
+
+    async def native_talk_audio(self, pcm16le: bytes) -> None:
+        """Encode and send exactly one 1024-sample PCM talk frame."""
+        if self._native_talk is None:
+            raise VideolinkConnectionError("Native talk session is not active")
+        await self._native_talk.send_audio(encode_dvi4_pcm16le(pcm16le))
+
+    async def native_talk_stop(self) -> None:
+        """Stop and close the experimental native talk path."""
+        async with self._native_talk_lock:
+            if self._native_talk is not None:
+                try:
+                    await self._native_talk.stop_talk()
+                finally:
+                    await self._native_talk.close()
+                    self._native_talk = None

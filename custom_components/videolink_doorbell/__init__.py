@@ -26,18 +26,20 @@ from .const import (
     PLATFORMS,
     CONF_VERIFY_SSL,
 )
+from .websocket import async_register as async_register_websocket
 
 type VideolinkConfigEntry = ConfigEntry[VideolinkClient]
 
 CARD_URL = "/videolink_doorbell/videolink-doorbell.js"
 LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
 CARD_PATH = Path(__file__).parent / "frontend" / "videolink-doorbell.js"
-CARD_VERSION = "0.12.9"
+CARD_VERSION = "0.12.10-native-talk1"
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the bundled Lovelace card once when the integration loads."""
+    async_register_websocket(hass)
     await hass.http.async_register_static_paths(
         [StaticPathConfig(CARD_URL, str(CARD_PATH), True)]
     )
@@ -120,4 +122,5 @@ async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) 
 
 async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
     """Unload a config entry."""
+    await entry.runtime_data.native_talk_stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.9";
+const CARD_VERSION = "0.12.10-native-talk1";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -16,6 +16,13 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._microphoneGain = undefined;
     this._keepaliveTrack = undefined;
     this._audioSender = undefined;
+    this._nativeContext = undefined;
+    this._nativeSource = undefined;
+    this._nativeProcessor = undefined;
+    this._nativeGain = undefined;
+    this._nativePcm = [];
+    this._nativeSendChain = Promise.resolve();
+    this._nativeTalking = false;
     this._sessionId = undefined;
     this._pendingCandidates = [];
     this._pendingRemoteCandidates = [];
@@ -56,6 +63,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         { name: "hide_video", selector: { boolean: {} } },
         { name: "hide_controls", selector: { boolean: {} } },
         { name: "disable_popup", selector: { boolean: {} } },
+        { name: "native_talk", selector: { boolean: {} } },
         { name: "debug", selector: { boolean: {} } },
       ],
       computeLabel: (schema) => ({
@@ -66,6 +74,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         hide_video: "Hide video stream",
         hide_controls: "Hide PTT and mute buttons",
         disable_popup: "Disable video popup",
+        native_talk: "Experimental native Baichuan talk",
         debug: "Show stream diagnostics",
       })[schema.name],
     };
@@ -87,6 +96,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       hide_video: false,
       hide_controls: false,
       disable_popup: false,
+      native_talk: false,
       debug: false,
       ...config,
       video_fit: videoFit,
@@ -545,7 +555,14 @@ class VideolinkDoorbellCard extends HTMLElement {
         await this._stopMicrophone();
         return;
       }
-      if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
+      if (this._config.native_talk) {
+        await this._hass.callWS({
+          type: "videolink_doorbell/native_talk",
+          action: "start",
+          entity_id: this._config.entity,
+        });
+        await this._startNativeTalkCapture(this._micStream);
+      } else if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
         this._microphoneSource = this._keepaliveContext.createMediaStreamSource(this._micStream);
         this._microphoneSource.connect(this._microphoneGain);
         this._microphoneGain.gain.setValueAtTime(1, this._keepaliveContext.currentTime);
@@ -601,6 +618,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._microphoneSource?.disconnect();
     this._microphoneSource = undefined;
+    if (this._nativeTalking) await this._stopNativeTalkCapture();
     this._micStream?.getTracks().forEach((track) => track.stop());
     const sender = this._audioSender;
     this._talking = false;
@@ -617,6 +635,77 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (sender && !this._keepaliveTrack) {
       await sender.replaceTrack(this._keepaliveTrack).catch(() => undefined);
     }
+  }
+
+  async _startNativeTalkCapture(stream) {
+    const context = new AudioContext({ sampleRate: 16000 });
+    await context.resume();
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(1024, 1, 1);
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    this._nativeContext = context;
+    this._nativeSource = source;
+    this._nativeProcessor = processor;
+    this._nativeGain = gain;
+    this._nativePcm = [];
+    this._nativeSendChain = Promise.resolve();
+    this._nativeTalking = true;
+    processor.onaudioprocess = (event) => {
+      if (!this._nativeTalking) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const ratio = context.sampleRate / 16000;
+      for (const sample of input) this._nativePcm.push(sample);
+      const needed = Math.ceil(1024 * ratio);
+      while (this._nativePcm.length >= needed) {
+        const pcm = new Int16Array(1024);
+        for (let index = 0; index < pcm.length; index++) {
+          const sample = this._nativePcm[Math.min(Math.floor(index * ratio), this._nativePcm.length - 1)];
+          pcm[index] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+        }
+        this._nativePcm.splice(0, needed);
+        const bytes = new Uint8Array(pcm.buffer);
+        let binary = "";
+        for (let index = 0; index < bytes.length; index += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+        }
+        const encoded = btoa(binary);
+        this._nativeSendChain = this._nativeSendChain
+          .then(() => this._hass.callWS({
+            type: "videolink_doorbell/native_talk",
+            action: "audio",
+            entity_id: this._config.entity,
+            pcm: encoded,
+          }))
+          .catch((error) => {
+            this._diagnostics.nativeTalkError = error?.message || String(error);
+          });
+      }
+    };
+    source.connect(processor);
+    processor.connect(gain);
+    gain.connect(context.destination);
+  }
+
+  async _stopNativeTalkCapture() {
+    this._nativeTalking = false;
+    this._nativeProcessor?.disconnect();
+    this._nativeSource?.disconnect();
+    this._nativeGain?.disconnect();
+    await this._nativeSendChain.catch(() => undefined);
+    await this._hass.callWS({
+      type: "videolink_doorbell/native_talk",
+      action: "stop",
+      entity_id: this._config.entity,
+    }).catch((error) => {
+      this._diagnostics.nativeTalkError = error?.message || String(error);
+    });
+    if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
+    this._nativeContext = undefined;
+    this._nativeSource = undefined;
+    this._nativeProcessor = undefined;
+    this._nativeGain = undefined;
+    this._nativePcm = [];
   }
 
   _toggleSound = () => {

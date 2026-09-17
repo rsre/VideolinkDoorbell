@@ -3,11 +3,11 @@
   "name": "Videolink Doorbell",
   "codeowners": ["@rsre"],
   "config_flow": true,
-  "dependencies": ["frontend", "go2rtc", "http", "stream"],
+  "dependencies": ["frontend", "go2rtc", "http", "stream", "websocket_api"],
   "documentation": "https://github.com/rsre/VideolinkDoorbell",
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rsre/VideolinkDoorbell/issues",
   "requirements": [],
-  "version": "0.12.9"
+  "version": "0.12.10"
 }
