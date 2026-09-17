@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.6] - 2026-09-17
+
+### Fixed
+
+- Kept the WebRTC/RTSP audio backchannel alive with a silent audio track between
+  push-to-talk presses so short messages are not delayed in the camera queue.
+
 ## [0.12.5] - 2026-09-17
 
 ### Changed

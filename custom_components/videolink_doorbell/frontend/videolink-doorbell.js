@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.5";
+const CARD_VERSION = "0.12.6";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -9,6 +9,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._peer = undefined;
     this._remoteStream = undefined;
     this._micStream = undefined;
+    this._keepaliveContext = undefined;
+    this._keepaliveSource = undefined;
+    this._keepaliveTrack = undefined;
     this._audioSender = undefined;
     this._sessionId = undefined;
     this._pendingCandidates = [];
@@ -310,6 +313,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._startDiagnostics();
       if (clientConfig.dataChannel) peer.createDataChannel(clientConfig.dataChannel);
 
+      this._createKeepaliveAudio();
+
       this._remoteStream = new MediaStream();
       peer.ontrack = (event) => {
         if (!this._isCurrentConnection(generation) || this._peer !== peer) return;
@@ -345,6 +350,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       const audioTransceiver = peer.addTransceiver("audio", { direction: "sendrecv" });
       this._preferLowLatencyAudio(audioTransceiver);
       this._audioSender = audioTransceiver.sender;
+      if (this._keepaliveTrack) await this._audioSender.replaceTrack(this._keepaliveTrack);
       if (!this._audioOnly) peer.addTransceiver("video", { direction: "recvonly" });
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
@@ -378,6 +384,41 @@ class VideolinkDoorbellCard extends HTMLElement {
     } finally {
       if (this._startingGeneration === generation) this._startingGeneration = undefined;
     }
+  }
+
+  _createKeepaliveAudio() {
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor || this._keepaliveTrack) return;
+    try {
+      const context = new AudioContextConstructor({ latencyHint: "interactive" });
+      const source = context.createConstantSource();
+      const gain = context.createGain();
+      const destination = context.createMediaStreamDestination();
+      gain.gain.value = 0;
+      source.connect(gain).connect(destination);
+      source.start();
+      this._keepaliveContext = context;
+      this._keepaliveSource = source;
+      this._keepaliveTrack = destination.stream.getAudioTracks()[0];
+    } catch {
+      // Browsers without an AudioContext keep the previous behavior.
+      this._keepaliveContext = undefined;
+      this._keepaliveSource = undefined;
+      this._keepaliveTrack = undefined;
+    }
+  }
+
+  async _closeKeepaliveAudio() {
+    this._keepaliveTrack?.stop();
+    this._keepaliveTrack = undefined;
+    try {
+      this._keepaliveSource?.stop();
+    } catch {
+      // The source may already have stopped during connection cleanup.
+    }
+    this._keepaliveSource = undefined;
+    await this._keepaliveContext?.close().catch(() => undefined);
+    this._keepaliveContext = undefined;
   }
 
   _preferLowLatencyAudio(transceiver) {
@@ -486,6 +527,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       if (!track) throw new Error("Browser did not provide a microphone audio track");
       const sender = this._audioSender;
       if (!sender) throw new Error("WebRTC audio sender is unavailable");
+      await this._keepaliveContext?.resume().catch(() => undefined);
       this._outboundPacketsAtAttach = await this._getOutboundAudioPackets();
       if (!this._talkRequested || track.readyState === "ended") {
         await this._stopMicrophone();
@@ -549,7 +591,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateSoundButton();
     this._updateTalkButton();
     this._micStream = undefined;
-    if (sender) await sender.replaceTrack(null).catch(() => undefined);
+    if (sender) {
+      await sender.replaceTrack(this._keepaliveTrack).catch(() => undefined);
+    }
   }
 
   _toggleSound = () => {
@@ -704,6 +748,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._streamReady = false;
     this._stopDiagnostics();
     await this._stopMicrophone();
+    await this._closeKeepaliveAudio();
     this._remoteStream?.getTracks().forEach((track) => track.stop());
     this._remoteStream = undefined;
     this._peer?.close();
