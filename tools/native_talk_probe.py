@@ -10,6 +10,8 @@ import math
 import os
 import struct
 import sys
+import statistics
+import time
 import wave
 from pathlib import Path
 
@@ -51,11 +53,25 @@ async def probe(args: argparse.Namespace) -> int:
             block_size = config.length_per_encoder
             if len(samples) % block_size:
                 samples += [0] * (block_size - (len(samples) % block_size))
+            send_times = []
+            send_durations = []
             for offset in range(0, len(samples), block_size):
                 block = struct.pack(f"<{block_size}h", *samples[offset : offset + block_size])
+                started = time.perf_counter()
                 await session.send_pcm(block)
+                sent = time.perf_counter()
+                send_times.append(sent)
+                send_durations.append(sent - started)
                 await asyncio.sleep(block_size / config.sample_rate)
             print(f"Audio sent: {len(samples)} samples")
+            if len(send_times) > 1:
+                intervals = [right - left for left, right in zip(send_times, send_times[1:])]
+                print(
+                    "Audio cadence: "
+                    f"mean={statistics.mean(intervals) * 1000:.1f} ms, "
+                    f"median={statistics.median(intervals) * 1000:.1f} ms"
+                )
+            print(f"TCP write: max={max(send_durations) * 1000:.1f} ms")
         return 0
     except Exception as err:
         print(f"Native probe failed: {type(err).__name__}: {err}", file=sys.stderr)

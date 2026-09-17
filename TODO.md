@@ -21,6 +21,8 @@
 - [x] Add an independent regression test confirming consecutive DVI-4 blocks
       carry the encoder's predictor/index state into the next block header.
 - [ ] Measure microphone callback cadence and packet arrival cadence.
+- [x] Add CLI measurements for native audio TCP write duration and inter-frame
+      cadence.
 - [ ] Add timestamps for capture, Home Assistant/WebSocket enqueue, TCP send,
       camera response, and audible playback.
 - [ ] Implement the SDK-equivalent mix-audio callback before selecting
