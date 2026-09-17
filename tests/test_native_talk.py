@@ -49,11 +49,11 @@ def test_dvi4_encoder_rejects_invalid_pcm() -> None:
 
 
 def test_adpcm_media_has_baichuan_header_and_alignment() -> None:
-    media = native_talk.serialize_adpcm_media(b"\x00\x00\x00\x00" + b"\x55" * 512)
+    media = native_talk.serialize_adpcm_media(b"\x00\x00\x00\x00" + b"\x55" * 508)
     assert media[:4] == b"0\x31wb"
     assert media[-4:] == b"\x00" * 4
-    assert int.from_bytes(media[4:6], "little") == 520
-    assert int.from_bytes(media[10:12], "little") == 256
+    assert int.from_bytes(media[4:6], "little") == 516
+    assert int.from_bytes(media[10:12], "little") == 0
 
 
 def test_talk_config_and_message_layout() -> None:
@@ -75,8 +75,8 @@ def test_talk_audio_message_contains_binary_media() -> None:
 
 def test_modern_login_digests_and_bc_encrypt() -> None:
     user_digest, password_digest = native_talk.modern_login_digests("admin", "secret", "nonce")
-    assert user_digest == "b69e7aad464dbe941a1aa4abfb3cf89b"
-    assert password_digest == "8d7b6bea1513f839f8861291f18ac1d9"
+    assert user_digest == "B69E7AAD464DBE941A1AA4ABFB3CF89"
+    assert password_digest == "8D7B6BEA1513F839F8861291F18AC1D"
     data = b"<body>test</body>"
     assert native_talk.bc_encrypt(0, native_talk.bc_encrypt(0, data)) == data
 
@@ -86,8 +86,9 @@ def test_baichuan_message_parser_handles_modern_header() -> None:
     header, extension, payload = native_talk.split_baichuan_message(message)
     assert header.message_id == native_talk.MSG_ID_TALK_CONFIG
     assert header.message_number == 7
-    assert extension.startswith(b"<Extension>")
-    assert payload.startswith(b"<body")
+    assert extension.startswith(b'<?xml version="1.0"')
+    assert b'<Extension version="1.1">' in extension
+    assert b"<body>" in payload
 
 
 def test_modern_header_can_be_inspected_from_twenty_byte_prefix() -> None:

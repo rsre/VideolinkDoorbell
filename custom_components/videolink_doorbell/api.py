@@ -307,9 +307,8 @@ class VideolinkClient:
                 )
                 try:
                     await self._native_talk.login()
-                    await self._native_talk.configure_talk(
-                        TalkConfig(channel_id=channel)
-                    )
+                    ability = await self._native_talk.talk_ability()
+                    await self._native_talk.configure_talk(ability.to_config(channel))
                 except Exception:
                     await self._native_talk.close()
                     self._native_talk = None

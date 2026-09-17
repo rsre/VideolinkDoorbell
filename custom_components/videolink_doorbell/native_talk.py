@@ -14,6 +14,7 @@ import hashlib
 import re
 import struct
 from typing import Callable, Iterable
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 
@@ -29,8 +30,10 @@ BC_CLASS_MODERN_24 = 0x6414
 MSG_ID_TALK_CONFIG = 201
 MSG_ID_TALK = 202
 MSG_ID_TALK_STOP = 11
+MSG_ID_TALK_ABILITY = 10
 BCMEDIA_ADPCM_MAGIC = 0x62773130
 BCMEDIA_ADPCM_DATA_MAGIC = 0x0100
+XML_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
 
 _IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8) * 2
 _IMA_STEP_TABLE = (
@@ -77,7 +80,7 @@ def _ima_encode_nibble(sample: int, predictor: int, index: int) -> tuple[int, in
     return nibble, predictor, index
 
 
-def encode_dvi4_block(samples: Iterable[int], *, byte_order: str = ">") -> bytes:
+def encode_dvi4_block(samples: Iterable[int], *, byte_order: str = "<") -> bytes:
     """Encode one mono DVI-4/IMA ADPCM block.
 
     DVI-4 stores the initial 16-bit predictor, an index, and a reserved byte,
@@ -102,7 +105,7 @@ def encode_dvi4_block(samples: Iterable[int], *, byte_order: str = ">") -> bytes
     return bytes(encoded)
 
 
-def encode_dvi4_pcm16le(pcm: bytes, *, byte_order: str = ">") -> bytes:
+def encode_dvi4_pcm16le(pcm: bytes, *, byte_order: str = "<") -> bytes:
     """Encode signed 16-bit little-endian mono PCM as one DVI-4 block."""
     if len(pcm) % 2:
         raise ValueError("PCM16 data must contain complete samples")
@@ -171,7 +174,7 @@ class TalkConfig:
     duplex: str = "FDX"
     audio_stream_mode: str = "followVideoStream"
     sound_track: str = "mono"
-    version: str = "1.0"
+    version: str = "1.1"
 
     def to_xml(self) -> bytes:
         """Serialize the TalkConfig body used by MSG_ID_TALK_CONFIG."""
@@ -189,7 +192,33 @@ class TalkConfig:
             "</audioConfig>"
             "</TalkConfig>"
         )
-        return f'<body version="{escape(self.version)}">{values}</body>'.encode()
+        return XML_DECLARATION + f'<body>{values}</body>'.encode()
+
+
+@dataclass(frozen=True, slots=True)
+class TalkAbility:
+    """Talk profile advertised by the camera."""
+
+    version: str = "1.1"
+    duplex: str = "FDX"
+    audio_stream_mode: str = "followVideoStream"
+    audio_type: str = "adpcm"
+    sample_rate: int = SAMPLE_RATE
+    sample_precision: int = 16
+    length_per_encoder: int = SAMPLES_PER_FRAME
+    sound_track: str = "mono"
+
+    def to_config(self, channel_id: int) -> TalkConfig:
+        return TalkConfig(
+            channel_id=channel_id,
+            version=self.version or "1.1",
+            duplex=self.duplex,
+            audio_stream_mode=self.audio_stream_mode,
+            sample_rate=self.sample_rate,
+            sample_precision=self.sample_precision,
+            length_per_encoder=self.length_per_encoder,
+            sound_track=self.sound_track,
+        )
 
 
 def serialize_adpcm_media(data: bytes) -> bytes:
@@ -198,15 +227,23 @@ def serialize_adpcm_media(data: bytes) -> bytes:
         raise ValueError("ADPCM data must include its 4-byte predictor header")
     if (len(data) - 4) % 2:
         raise ValueError("ADPCM block payload must have an even byte count")
+    return serialize_adpcm_media_with_sequence(data, sequence=0)
+
+
+def serialize_adpcm_media_with_sequence(data: bytes, *, sequence: int) -> bytes:
+    """Serialize one ADPCM block with the camera-required sequence field."""
+    if not 0 <= sequence <= 0xFFFF:
+        raise ValueError("ADPCM sequence must fit in uint16")
+    payload_size = len(data) + 4
     media = struct.pack(
         "<IHHHH",
         BCMEDIA_ADPCM_MAGIC,
-        len(data) + 4,
-        len(data) + 4,
+        payload_size,
+        payload_size,
         BCMEDIA_ADPCM_DATA_MAGIC,
-        (len(data) - 4) // 2,
+        sequence,
     ) + data
-    return media + bytes((-len(data)) % 8)
+    return media + bytes((-payload_size) % 8)
 
 
 def serialize_talk_message(
@@ -256,8 +293,8 @@ def serialize_talk_config_message(
     encrypt_xml: Callable[[int, bytes], bytes] | None = None,
 ) -> bytes:
     """Build the talk configuration command."""
-    extension = (
-        f'<Extension><channelId>{config.channel_id}</channelId></Extension>'.encode()
+    extension = XML_DECLARATION + (
+        f'<Extension version="1.1"><channelId>{config.channel_id}</channelId></Extension>'.encode()
     )
     payload = config.to_xml()
     if encrypt_xml is not None:
@@ -273,22 +310,24 @@ def serialize_talk_config_message(
 
 
 def serialize_talk_audio_message(
-    adpcm_data: bytes, *, msg_num: int, channel_id: int = 0
+    adpcm_data: bytes, *, msg_num: int, channel_id: int = 0, sequence: int = 0
 ) -> bytes:
     """Build one binary MSG_ID_TALK message from a DVI-4 ADPCM block."""
-    extension = f"<Extension><channelId>{channel_id}</channelId><binaryData>1</binaryData></Extension>".encode()
+    extension = XML_DECLARATION + (
+        f'<Extension version="1.1"><channelId>{channel_id}</channelId><binaryData>1</binaryData></Extension>'.encode()
+    )
     return serialize_talk_message(
         msg_id=MSG_ID_TALK,
         msg_num=msg_num,
         channel_id=channel_id,
         extension=extension,
-        payload=serialize_adpcm_media(adpcm_data),
+        payload=serialize_adpcm_media_with_sequence(adpcm_data, sequence=sequence),
     )
 
 
 def md5_hex(value: str) -> str:
-    """Return the lowercase MD5 representation used by modern login."""
-    return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest()
+    """Return Baichuan's uppercase 31-character modern MD5 representation."""
+    return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest().upper()[:31]
 
 
 def bc_encrypt(offset: int, data: bytes) -> bytes:
@@ -460,13 +499,30 @@ class BaichuanTcpClient:
 class NativeTalkSession:
     """Authenticated native-talk session for a local Reolink camera."""
 
-    def __init__(self, host: str, username: str, password: str, *, channel: int = 0) -> None:
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        channel: int = 0,
+        trace: Callable[[str], None] | None = None,
+        max_encryption: int = 0xDC12,
+    ) -> None:
         self.client = BaichuanTcpClient(host)
         self.username = username
         self.password = password
         self.channel = channel
         self._aes_key: bytes | None = None
+        self._encryption_mode = 0
         self._logged_in = False
+        self._audio_sequence = 0
+        self.trace = trace
+        self.max_encryption = max_encryption
+
+    def _trace(self, message: str) -> None:
+        if self.trace is not None:
+            self.trace(message)
 
     @staticmethod
     def _xml_bytes(raw: bytes, *, key: bytes | None = None) -> bytes:
@@ -483,38 +539,61 @@ class NativeTalkSession:
         """Perform the local legacy/modern login sequence."""
         await self.client.connect()
         number = self.client.next_message_number()
-        await self.client.send(serialize_login_upgrade(message_number=number))
+        await self.client.send(
+            serialize_login_upgrade(
+                message_number=number,
+                encryption_code=self.max_encryption,
+            )
+        )
         reply_header, _, reply_payload = await self.client.receive()
+        self._trace(
+            f"login negotiation: id={reply_header.message_id} class=0x{reply_header.message_class:04x} "
+            f"response={reply_header.response_code} body={reply_header.body_length} payload={len(reply_payload)}"
+        )
         encryption_xml = self._xml_bytes(reply_payload)
+        self._trace(f"login negotiation XML: {encryption_xml.decode(errors='replace')}")
         nonce_match = re.search(rb"<nonce>([^<]+)</nonce>", encryption_xml)
         if nonce_match is None:
             raise ValueError("camera login reply did not contain a nonce")
         nonce = nonce_match.group(1).decode()
+        self._encryption_mode = reply_header.response_code & 0xFF
+        if self._encryption_mode not in (0x00, 0x01, 0x02, 0x12):
+            raise ValueError(f"camera selected unsupported encryption: 0x{self._encryption_mode:02x}")
+        if self._encryption_mode in (0x02, 0x12):
+            self._aes_key = make_aes_key(self.password, nonce)
         username_digest, password_digest = modern_login_digests(
             self.username, self.password, nonce
         )
-        login_xml = (
-            '<body><LoginUser version="1.0">'
+        login_xml = XML_DECLARATION + (
+            '<body><LoginUser version="1.1">'
             f"<userName>{escape(username_digest)}</userName>"
             f"<password>{escape(password_digest)}</password>"
             "<userVer>1</userVer></LoginUser>"
-            '<LoginNet version="1.0"><type>LAN</type><udpPort>0</udpPort></LoginNet>'
+            '<LoginNet version="1.1"><type>LAN</type><udpPort>0</udpPort></LoginNet>'
             "</body>"
         ).encode()
-        extension = f"<Extension><channelId>{self.channel}</channelId></Extension>".encode()
         modern = serialize_talk_message(
             msg_id=1,
             msg_num=number,
             channel_id=self.channel,
-            extension=bc_encrypt(self.channel, extension),
+            # The modern login itself is always BCEncrypt.  The negotiated
+            # AES/FullAES mode becomes active only after its 200 response.
+            extension=b"",
             payload=bc_encrypt(self.channel, login_xml),
+        )
+        self._trace(
+            f"login request: id=1 class=0x{BC_CLASS_MODERN_24:04x} "
+            f"extension=0 payload={len(login_xml)} encrypted=bc"
         )
         await self.client.send(modern)
         result_header, _, result_payload = await self.client.receive()
+        self._trace(
+            f"login result: id={result_header.message_id} class=0x{result_header.message_class:04x} "
+            f"response={result_header.response_code} body={result_header.body_length} payload={len(result_payload)}"
+        )
         if result_header.response_code != 200:
             raise PermissionError(f"camera rejected native login: {result_header.response_code}")
-        self._aes_key = make_aes_key(self.password, nonce)
-        self._xml_bytes(result_payload, key=self._aes_key)
+        self._xml_bytes(result_payload)
         self._logged_in = True
 
     async def close(self) -> None:
@@ -522,31 +601,92 @@ class NativeTalkSession:
         self._logged_in = False
 
     def _encrypt_xml(self, offset: int, payload: bytes) -> bytes:
-        if self._aes_key is None:
-            raise RuntimeError("native talk session is not authenticated")
-        return aes_cfb_encrypt(self._aes_key, payload)
+        if self._encryption_mode in (0x02, 0x12):
+            if self._aes_key is None:
+                raise RuntimeError("native talk AES key is not available")
+            return aes_cfb_encrypt(self._aes_key, payload)
+        if self._encryption_mode == 0x01:
+            return bc_encrypt(offset, payload)
+        return payload
 
     async def configure_talk(self, config: TalkConfig) -> None:
         """Send the negotiated talk configuration."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
-        await self.client.send(
-            serialize_talk_config_message(
-                config,
-                msg_num=self.client.next_message_number(),
-                encrypt_xml=self._encrypt_xml,
+        message = serialize_talk_config_message(
+            config,
+            msg_num=self.client.next_message_number(),
+            encrypt_xml=self._encrypt_xml,
+        )
+        await self.client.send(message)
+        header, _, _ = await self.client.receive()
+        if header.response_code == 422:
+            await self.stop_talk()
+            await self.client.send(
+                serialize_talk_config_message(
+                    config,
+                    msg_num=self.client.next_message_number(),
+                    encrypt_xml=self._encrypt_xml,
+                )
             )
+            header, _, _ = await self.client.receive()
+        if header.response_code != 200:
+            raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
+
+    async def talk_ability(self) -> TalkAbility:
+        """Read and select the camera's advertised ADPCM talk profile."""
+        if not self._logged_in:
+            raise RuntimeError("native talk session is not authenticated")
+        extension = XML_DECLARATION + (
+            f'<Extension version="1.1"><channelId>{self.channel}</channelId></Extension>'.encode()
+        )
+        await self.client.send(
+            serialize_talk_message(
+                msg_id=MSG_ID_TALK_ABILITY,
+                msg_num=self.client.next_message_number(),
+                channel_id=self.channel,
+                extension=self._encrypt_xml(self.channel, extension),
+            )
+        )
+        header, _, payload = await self.client.receive()
+        if header.response_code != 200:
+            raise PermissionError(f"camera rejected talk ability request: {header.response_code}")
+        xml = self._xml_bytes(payload, key=self._aes_key)
+        root = ElementTree.fromstring(xml)
+        talk = root.find("TalkAbility")
+        if talk is None:
+            raise ValueError("camera talk ability response did not contain TalkAbility")
+        duplexes = [node.text for node in talk.findall("./duplexList/duplex") if node.text]
+        modes = [node.text for node in talk.findall("./audioStreamModeList/audioStreamMode") if node.text]
+        configs = talk.findall("./audioConfigList/audioConfig")
+        selected = next(
+            (config for config in configs if config.findtext("audioType") == "adpcm"),
+            None,
+        )
+        if selected is None:
+            raise ValueError("camera did not advertise an ADPCM talk profile")
+        return TalkAbility(
+            version=talk.attrib.get("version", "1.1"),
+            duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
+            audio_stream_mode="speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"),
+            audio_type="adpcm",
+            sample_rate=int(selected.findtext("sampleRate", str(SAMPLE_RATE))),
+            sample_precision=int(selected.findtext("samplePrecision", "16")),
+            length_per_encoder=int(selected.findtext("lengthPerEncoder", str(SAMPLES_PER_FRAME))),
+            sound_track=selected.findtext("soundTrack", "mono"),
         )
 
     async def send_audio(self, adpcm_data: bytes) -> None:
         """Send one already-encoded ADPCM block."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
+        self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
         await self.client.send(
             serialize_talk_audio_message(
                 adpcm_data,
                 msg_num=self.client.next_message_number(),
                 channel_id=self.channel,
+                sequence=self._audio_sequence,
             )
         )
 
@@ -554,7 +694,9 @@ class NativeTalkSession:
         """Send the native talk reset command."""
         if not self._logged_in:
             return
-        extension = f"<Extension><channelId>{self.channel}</channelId></Extension>".encode()
+        extension = XML_DECLARATION + (
+            f'<Extension version="1.1"><channelId>{self.channel}</channelId></Extension>'.encode()
+        )
         await self.client.send(
             serialize_talk_message(
                 msg_id=MSG_ID_TALK_STOP,
@@ -563,3 +705,6 @@ class NativeTalkSession:
                 extension=self._encrypt_xml(self.channel, extension),
             )
         )
+        header, _, _ = await self.client.receive()
+        if header.response_code not in (200, 422):
+            raise PermissionError(f"camera rejected talk stop: {header.response_code}")
