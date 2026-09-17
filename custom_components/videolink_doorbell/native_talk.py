@@ -747,7 +747,10 @@ class NativeTalkSession:
         return TalkAbility(
             version=talk.attrib.get("version", "1.1"),
             duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
-            audio_stream_mode="speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"),
+            audio_stream_mode=(
+                "mixAudioStream" if "mixAudioStream" in modes
+                else ("speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"))
+            ),
             audio_type="adpcm",
             sample_rate=int(_xml_child_text(selected, "sampleRate", str(SAMPLE_RATE))),
             sample_precision=int(_xml_child_text(selected, "samplePrecision", "16")),
