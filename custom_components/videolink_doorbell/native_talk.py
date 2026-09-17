@@ -721,10 +721,12 @@ class NativeTalkSession:
             return bc_encrypt(offset, payload)
         return payload
 
-    async def configure_talk(self, config: TalkConfig) -> None:
-        """Send the negotiated talk configuration."""
+    async def open_talk(self, config: TalkConfig) -> None:
+        """Reproduce the SDK AudioTalkOpen request and acknowledgement flow."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
+        # Channel.talkOpen() passes the selected BC_TALK_CONFIG directly to
+        # BCSDK_AudioTalkOpen and waits for the SDK's command acknowledgement.
         message = serialize_talk_config_message(
             config,
             msg_num=self.client.next_message_number(),
@@ -732,6 +734,9 @@ class NativeTalkSession:
         )
         await self.client.send(message)
         header, _, _ = await self.client.receive()
+        self._trace(
+            f"AudioTalkOpen acknowledgement: response={header.response_code}"
+        )
         if header.response_code == 422:
             await self.stop_talk()
             await self.client.send(
@@ -742,10 +747,17 @@ class NativeTalkSession:
                 )
             )
             header, _, _ = await self._receive_response()
+            self._trace(
+                f"AudioTalkOpen retry acknowledgement: response={header.response_code}"
+            )
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
         if config.audio_stream_mode == "mixAudioStream":
             self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
+
+    async def configure_talk(self, config: TalkConfig) -> None:
+        """Compatibility alias for the SDK-equivalent talk opener."""
+        await self.open_talk(config)
 
     async def _read_mix_frames(self) -> None:
         """Drain unsolicited mix frames and preserve control responses."""

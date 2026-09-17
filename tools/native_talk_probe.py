@@ -44,7 +44,7 @@ async def probe(args: argparse.Namespace) -> int:
             f"{ability.length_per_encoder} samples, "
             f"duplex={ability.duplex}, mode={ability.audio_stream_mode}"
         )
-        await session.configure_talk(config)
+        await session.open_talk(config)
         print("Talk configuration: acknowledged")
         if args.wav or args.tone_seconds:
             samples = _read_audio(args.wav, config.sample_rate) if args.wav else _tone(

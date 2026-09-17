@@ -9,7 +9,9 @@
       64 ms packet cadence; payload bytes were intentionally not retained.
 - [x] Make the verified native TalkAbility request the default CLI behavior;
       no feature flag is required.
-- [ ] Reproduce the SDK `AudioTalkOpen` request and acknowledgement flow.
+- [x] Reproduce the SDK `AudioTalkOpen` request and acknowledgement flow:
+      send the selected `BC_TALK_CONFIG`, wait for its acknowledgement, then
+      register the mix callback when `mixAudioStream` is selected.
 - [x] Test the SDK-style 20-byte `AudioTalkOpen` control header. This camera
       acknowledges configuration but resets the connection on the first audio
       packet; keep the verified 24-byte path.
