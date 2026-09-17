@@ -34,7 +34,7 @@ async def probe(args: argparse.Namespace) -> int:
         print(f"Connecting to {args.host}:9000, channel {args.channel}")
         await session.login()
         print("Native login: OK")
-        ability = await session.talk_ability(native_request=args.native_ability)
+        ability = await session.talk_ability(native_request=True)
         config = ability.to_config(args.channel)
         print(
             "Talk ability: "
@@ -97,11 +97,6 @@ def main() -> int:
         help="legacy negotiation code, e.g. 0xdc12 (AES) or 0xdc01 (BCEncrypt)",
     )
     parser.add_argument("--configure", action="store_true", help="send TalkConfig after login")
-    parser.add_argument(
-        "--native-ability",
-        action="store_true",
-        help="request TalkAbility using the SDK's header-only request",
-    )
     parser.add_argument("--wav", help="mono 16-bit PCM WAV to play through the camera")
     parser.add_argument("--tone-seconds", type=float, help="generate a 440 Hz test tone")
     return asyncio.run(probe(parser.parse_args()))

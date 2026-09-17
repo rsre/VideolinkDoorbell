@@ -7,6 +7,8 @@
 - [x] Add an analyzer for the existing official-app relay trace. It confirms
       683-byte writes, a stable 24-byte Baichuan header, and approximately
       64 ms packet cadence; payload bytes were intentionally not retained.
+- [x] Make the verified native TalkAbility request the default CLI behavior;
+      no feature flag is required.
 - [ ] Reproduce the SDK `AudioTalkOpen` request and acknowledgement flow.
 - [x] Test the SDK-style 20-byte `AudioTalkOpen` control header. This camera
       acknowledges configuration but resets the connection on the first audio
