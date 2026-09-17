@@ -31,7 +31,8 @@
       `mixAudioStream`.
 - [ ] Wire the AEC-cleaned mix callback PCM into HA playback during native
       talk, while muting the duplicate WebRTC audio stream.
-- [ ] Confirm native stop/close behavior and recovery after interruption.
+- [x] Confirm native stop/close behavior and recovery after interruption;
+      verified across three consecutive camera sessions.
 
 ## Verification rule
 
