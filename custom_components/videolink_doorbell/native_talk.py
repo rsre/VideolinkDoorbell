@@ -548,6 +548,7 @@ class NativeTalkSession:
         *,
         channel: int = 0,
         trace: Callable[[str], None] | None = None,
+        mix_frame_callback: Callable[[bytes], None] | None = None,
         max_encryption: int = 0xDC12,
     ) -> None:
         self.client = BaichuanTcpClient(host)
@@ -560,6 +561,9 @@ class NativeTalkSession:
         self._audio_sequence = 0
         self._audio_encoder = Dvi4Encoder()
         self.trace = trace
+        self.mix_frame_callback = mix_frame_callback
+        self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes]] = asyncio.Queue()
+        self._mix_reader_task: asyncio.Task[None] | None = None
         self.max_encryption = max_encryption
 
     def _trace(self, message: str) -> None:
@@ -639,6 +643,10 @@ class NativeTalkSession:
         self._logged_in = True
 
     async def close(self) -> None:
+        if self._mix_reader_task is not None:
+            self._mix_reader_task.cancel()
+            await asyncio.gather(self._mix_reader_task, return_exceptions=True)
+            self._mix_reader_task = None
         try:
             await self.client.close()
         except (ConnectionResetError, BrokenPipeError):
@@ -678,9 +686,26 @@ class NativeTalkSession:
                     encrypt_xml=self._encrypt_xml,
                 )
             )
-            header, _, _ = await self.client.receive()
+            header, _, _ = await self._receive_response()
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
+        if config.audio_stream_mode == "mixAudioStream":
+            self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
+
+    async def _read_mix_frames(self) -> None:
+        """Drain unsolicited mix frames and preserve control responses."""
+        while True:
+            header, extension, payload = await self.client.receive()
+            if header.message_id == MSG_ID_TALK:
+                if self.mix_frame_callback is not None:
+                    self.mix_frame_callback(payload)
+                continue
+            await self._response_queue.put((header, extension, payload))
+
+    async def _receive_response(self) -> tuple[BaichuanHeader, bytes, bytes]:
+        if self._mix_reader_task is None:
+            return await self.client.receive()
+        return await self._response_queue.get()
 
     async def talk_ability(self, *, native_request: bool = False) -> TalkAbility:
         """Read and select the camera's advertised ADPCM talk profile."""
@@ -794,6 +819,6 @@ class NativeTalkSession:
                 extension=self._encrypt_xml(self.channel, extension),
             )
         )
-        header, _, _ = await self.client.receive()
+        header, _, _ = await self._receive_response()
         if header.response_code not in (200, 421, 422):
             raise PermissionError(f"camera rejected talk stop: {header.response_code}")
