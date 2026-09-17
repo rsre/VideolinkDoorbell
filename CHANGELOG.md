@@ -2,6 +2,15 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.14] - 2026-09-17
+
+### Added
+
+- Added the opt-in `native_talk` path using the camera's native Baichuan
+  AudioTalkOpen flow, ADPCM audio, and mix-audio callback playback.
+- Added lifecycle handling for cleaned mix PCM playback while muting duplicate
+  WebRTC audio during native talk.
+
 ## [0.12.9] - 2026-09-17
 
 ### Added

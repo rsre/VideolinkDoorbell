@@ -33,7 +33,7 @@ type VideolinkConfigEntry = ConfigEntry[VideolinkClient]
 CARD_URL = "/videolink_doorbell/videolink-doorbell.js"
 LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
 CARD_PATH = Path(__file__).parent / "frontend" / "videolink-doorbell.js"
-CARD_VERSION = "0.12.10-native-talk2"
+CARD_VERSION = "0.12.14-native-talk1"
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 

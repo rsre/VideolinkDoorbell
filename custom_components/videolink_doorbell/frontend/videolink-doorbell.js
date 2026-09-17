@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.10-native-talk2";
+const CARD_VERSION = "0.12.14-native-talk1";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {

@@ -64,6 +64,8 @@ Audio-only mode negotiates only camera audio and the push-to-talk backchannel.
 - `hide_video` to switch the card to its compact, audio-only intercom mode.
 - `hide_controls` to hide both the mute and push-to-talk buttons.
 - `debug` to show debug information and metrics like live WebRTC transport and PTT timing diagnostics.
+- `native_talk` to opt into the experimental native Baichuan talk path. It is
+  disabled by default and currently targets Reolink Doorbell firmware.
 
 ## Versions
 
