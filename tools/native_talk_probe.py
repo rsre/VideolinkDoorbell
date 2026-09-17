@@ -55,14 +55,16 @@ async def probe(args: argparse.Namespace) -> int:
                 samples += [0] * (block_size - (len(samples) % block_size))
             send_times = []
             send_durations = []
+            next_deadline = time.perf_counter()
             for offset in range(0, len(samples), block_size):
                 block = struct.pack(f"<{block_size}h", *samples[offset : offset + block_size])
+                await asyncio.sleep(max(0, next_deadline - time.perf_counter()))
                 started = time.perf_counter()
                 await session.send_pcm(block)
                 sent = time.perf_counter()
                 send_times.append(sent)
                 send_durations.append(sent - started)
-                await asyncio.sleep(block_size / config.sample_rate)
+                next_deadline += block_size / config.sample_rate
             print(f"Audio sent: {len(samples)} samples")
             if len(send_times) > 1:
                 intervals = [right - left for left, right in zip(send_times, send_times[1:])]

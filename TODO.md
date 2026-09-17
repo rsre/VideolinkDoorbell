@@ -23,6 +23,8 @@
 - [ ] Measure microphone callback cadence and packet arrival cadence.
 - [x] Add CLI measurements for native audio TCP write duration and inter-frame
       cadence.
+- [x] Pace CLI frames against absolute 64 ms deadlines so TCP write time does
+      not accumulate into the audio cadence.
 - [ ] Add timestamps for capture, Home Assistant/WebSocket enqueue, TCP send,
       camera response, and audible playback.
 - [ ] Implement the SDK-equivalent mix-audio callback before selecting
