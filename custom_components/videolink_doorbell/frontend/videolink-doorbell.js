@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.7";
+const CARD_VERSION = "0.12.8";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -11,6 +11,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._micStream = undefined;
     this._keepaliveContext = undefined;
     this._keepaliveSource = undefined;
+    this._keepaliveGain = undefined;
+    this._microphoneSource = undefined;
+    this._microphoneGain = undefined;
     this._keepaliveTrack = undefined;
     this._audioSender = undefined;
     this._sessionId = undefined;
@@ -392,18 +395,25 @@ class VideolinkDoorbellCard extends HTMLElement {
     try {
       const context = new AudioContextConstructor({ latencyHint: "interactive" });
       const source = context.createConstantSource();
-      const gain = context.createGain();
+      const keepaliveGain = context.createGain();
+      const microphoneGain = context.createGain();
       const destination = context.createMediaStreamDestination();
-      gain.gain.value = 0;
-      source.connect(gain).connect(destination);
+      keepaliveGain.gain.value = 0;
+      microphoneGain.gain.value = 0;
+      source.connect(keepaliveGain).connect(destination);
+      microphoneGain.connect(destination);
       source.start();
       this._keepaliveContext = context;
       this._keepaliveSource = source;
+      this._keepaliveGain = keepaliveGain;
+      this._microphoneGain = microphoneGain;
       this._keepaliveTrack = destination.stream.getAudioTracks()[0];
     } catch {
       // Browsers without an AudioContext keep the previous behavior.
       this._keepaliveContext = undefined;
       this._keepaliveSource = undefined;
+      this._keepaliveGain = undefined;
+      this._microphoneGain = undefined;
       this._keepaliveTrack = undefined;
     }
   }
@@ -417,6 +427,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       // The source may already have stopped during connection cleanup.
     }
     this._keepaliveSource = undefined;
+    this._keepaliveGain = undefined;
+    this._microphoneGain = undefined;
     await this._keepaliveContext?.close().catch(() => undefined);
     this._keepaliveContext = undefined;
   }
@@ -533,7 +545,13 @@ class VideolinkDoorbellCard extends HTMLElement {
         await this._stopMicrophone();
         return;
       }
-      await sender.replaceTrack(track);
+      if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
+        this._microphoneSource = this._keepaliveContext.createMediaStreamSource(this._micStream);
+        this._microphoneSource.connect(this._microphoneGain);
+        this._microphoneGain.gain.setValueAtTime(1, this._keepaliveContext.currentTime);
+      } else {
+        await sender.replaceTrack(track);
+      }
       if (!this._talkRequested || sender !== this._audioSender) {
         await this._stopMicrophone();
         return;
@@ -578,6 +596,11 @@ class VideolinkDoorbellCard extends HTMLElement {
   async _stopMicrophone() {
     const restoreMuted = this._talking ? this._mutedBeforeTalk : undefined;
     this._talkRequested = false;
+    if (this._microphoneGain && this._keepaliveContext) {
+      this._microphoneGain.gain.setValueAtTime(0, this._keepaliveContext.currentTime);
+    }
+    this._microphoneSource?.disconnect();
+    this._microphoneSource = undefined;
     this._micStream?.getTracks().forEach((track) => track.stop());
     const sender = this._audioSender;
     this._talking = false;
@@ -591,7 +614,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateSoundButton();
     this._updateTalkButton();
     this._micStream = undefined;
-    if (sender) {
+    if (sender && !this._keepaliveTrack) {
       await sender.replaceTrack(this._keepaliveTrack).catch(() => undefined);
     }
   }

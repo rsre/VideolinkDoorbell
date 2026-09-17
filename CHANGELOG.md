@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.8] - 2026-09-17
+
+### Changed
+
+- Route microphone audio through the already-active silent WebRTC sender track
+  instead of replacing the track at PTT start, reducing sender startup delay.
+
 ## [0.12.7] - 2026-09-17
 
 ### Changed
