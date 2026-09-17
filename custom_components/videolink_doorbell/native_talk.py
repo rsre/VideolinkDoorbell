@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import re
 import struct
+import time
 from typing import Callable, Iterable
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
@@ -563,6 +564,7 @@ class NativeTalkSession:
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
         self._mix_frame_count = 0
+        self._last_mix_frame_at: float | None = None
         self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes]] = asyncio.Queue()
         self._mix_reader_task: asyncio.Task[None] | None = None
         self.max_encryption = max_encryption
@@ -698,10 +700,17 @@ class NativeTalkSession:
         while True:
             header, extension, payload = await self.client.receive()
             if header.message_id == MSG_ID_TALK:
+                now = time.monotonic()
+                interval = (
+                    "first"
+                    if self._last_mix_frame_at is None
+                    else f"{(now - self._last_mix_frame_at) * 1000:.1f} ms"
+                )
+                self._last_mix_frame_at = now
                 self._mix_frame_count += 1
                 self._trace(
                     f"mix frame: count={self._mix_frame_count} "
-                    f"extension={len(extension)} payload={len(payload)}"
+                    f"interval={interval} extension={len(extension)} payload={len(payload)}"
                 )
                 if self.mix_frame_callback is not None:
                     self.mix_frame_callback(payload)
