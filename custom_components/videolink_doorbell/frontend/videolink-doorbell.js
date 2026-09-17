@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.3";
+const CARD_VERSION = "0.12.4";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {

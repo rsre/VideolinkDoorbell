@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.4] - 2026-09-17
+
+### Fixed
+
+- Persisted the bundled Lovelace card as a module resource for storage-mode
+  dashboards, while retaining the frontend-module fallback for YAML dashboards.
+- Migrated the legacy card resource URL and bumped the frontend cache version.
+
 ## [0.12.3] - 2026-09-16
 
 ### Fixed
@@ -209,6 +217,7 @@ All notable changes are documented here. This project follows Semantic Versionin
 - HACS metadata and automated HACS/Hassfest validation.
 
 [0.12.3]: https://github.com/rsre/VideolinkDoorbell/compare/v0.12.0...v0.12.3
+[0.12.4]: https://github.com/rsre/VideolinkDoorbell/compare/v0.12.3...v0.12.4
 [0.12.0]: https://github.com/rsre/VideolinkDoorbell/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rsre/VideolinkDoorbell/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rsre/VideolinkDoorbell/compare/v0.9.0...v0.10.0
