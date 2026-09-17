@@ -682,11 +682,11 @@ class NativeTalkSession:
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
 
-    async def talk_ability(self) -> TalkAbility:
+    async def talk_ability(self, *, native_request: bool = False) -> TalkAbility:
         """Read and select the camera's advertised ADPCM talk profile."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
-        extension = XML_DECLARATION + (
+        extension = b"" if native_request else XML_DECLARATION + (
             f'<Extension version="1.1"><channelId>{self.channel}</channelId></Extension>'.encode()
         )
         await self.client.send(
@@ -717,7 +717,7 @@ class NativeTalkSession:
             # The APK's BCSDK path uses command 2157 and supplies the same
             # profile below to its talk opener.  The profile has been verified
             # by the accepted config/audio path on this model.
-            if "VideoInput" in tags:
+            if "VideoInput" in tags and not native_request:
                 self._trace(
                     "talk ability: camera returned VideoInput for generic XML "
                     "query; using verified native doorbell profile"

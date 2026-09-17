@@ -5,6 +5,9 @@
 - [ ] Capture a known-good official-app talk packet and compare the native
       media header and ADPCM payload byte-for-byte.
 - [ ] Reproduce the SDK `AudioTalkOpen` request and acknowledgement flow.
+- [x] Test the SDK-style 20-byte `AudioTalkOpen` control header. This camera
+      acknowledges configuration but resets the connection on the first audio
+      packet; keep the verified 24-byte path.
 - [ ] Verify the native ADPCM media-header fields independently:
       `01wb` magic, block size, cumulative size, sample count, index, and
       predictor.
