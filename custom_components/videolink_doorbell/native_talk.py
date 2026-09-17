@@ -562,6 +562,7 @@ class NativeTalkSession:
         self._audio_encoder = Dvi4Encoder()
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
+        self._mix_frame_count = 0
         self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes]] = asyncio.Queue()
         self._mix_reader_task: asyncio.Task[None] | None = None
         self.max_encryption = max_encryption
@@ -697,6 +698,11 @@ class NativeTalkSession:
         while True:
             header, extension, payload = await self.client.receive()
             if header.message_id == MSG_ID_TALK:
+                self._mix_frame_count += 1
+                self._trace(
+                    f"mix frame: count={self._mix_frame_count} "
+                    f"extension={len(extension)} payload={len(payload)}"
+                )
                 if self.mix_frame_callback is not None:
                     self.mix_frame_callback(payload)
                 continue
