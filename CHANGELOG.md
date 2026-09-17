@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.7] - 2026-09-17
+
+### Changed
+
+- Use UDP for the RTSP/ONVIF audio backchannel to reduce transport head-of-line
+  blocking and lower live speech latency.
+
 ## [0.12.6] - 2026-09-17
 
 ### Fixed
