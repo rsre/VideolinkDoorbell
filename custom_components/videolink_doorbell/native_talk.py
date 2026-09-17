@@ -178,6 +178,24 @@ def split_native_talk_frame(data: bytes) -> NativeTalkFrame:
     return NativeTalkFrame(data[OBSERVED_HEADER_SIZE:])
 
 
+@dataclass(frozen=True, slots=True)
+class NativeMixFrame:
+    """The two PCM buffers delivered by the SDK mix callback."""
+
+    far_end: bytes
+    near_end: bytes
+
+
+def parse_native_mix_frame(payload: bytes) -> NativeMixFrame | None:
+    """Split one native mix payload into far-end and near-end PCM buffers."""
+    if not payload:
+        return None
+    if len(payload) % 4:
+        raise ValueError("native mix payload is not two even-sized PCM buffers")
+    midpoint = len(payload) // 2
+    return NativeMixFrame(payload[:midpoint], payload[midpoint:])
+
+
 class NativeTalkPacketizer:
     """Turn one 64 ms PCM frame into encoded audio.
 
@@ -549,7 +567,7 @@ class NativeTalkSession:
         *,
         channel: int = 0,
         trace: Callable[[str], None] | None = None,
-        mix_frame_callback: Callable[[bytes], None] | None = None,
+        mix_frame_callback: Callable[[NativeMixFrame], None] | None = None,
         max_encryption: int = 0xDC12,
     ) -> None:
         self.client = BaichuanTcpClient(host)
@@ -699,7 +717,7 @@ class NativeTalkSession:
         """Drain unsolicited mix frames and preserve control responses."""
         while True:
             header, extension, payload = await self.client.receive()
-            if header.message_id == MSG_ID_TALK:
+            if header.message_id == MSG_ID_TALK and header.response_code == 0:
                 now = time.monotonic()
                 interval = (
                     "first"
@@ -712,8 +730,10 @@ class NativeTalkSession:
                     f"mix frame: count={self._mix_frame_count} "
                     f"interval={interval} extension={len(extension)} payload={len(payload)}"
                 )
+                mix_frame = parse_native_mix_frame(payload)
                 if self.mix_frame_callback is not None:
-                    self.mix_frame_callback(payload)
+                    if mix_frame is not None:
+                        self.mix_frame_callback(mix_frame)
                 continue
             await self._response_queue.put((header, extension, payload))
 
