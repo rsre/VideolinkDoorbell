@@ -184,6 +184,7 @@ class NativeMixFrame:
 
     far_end: bytes
     near_end: bytes
+    cleaned_near_end: bytes | None = None
 
 
 def parse_native_mix_frame(payload: bytes) -> NativeMixFrame | None:
@@ -194,6 +195,38 @@ def parse_native_mix_frame(payload: bytes) -> NativeMixFrame | None:
         raise ValueError("native mix payload is not two even-sized PCM buffers")
     midpoint = len(payload) // 2
     return NativeMixFrame(payload[:midpoint], payload[midpoint:])
+
+
+class AdaptiveEchoCanceller:
+    """Small normalized-LMS canceller for paired 16-bit PCM mix buffers."""
+
+    def __init__(self, *, taps: int = 128, step: float = 0.08) -> None:
+        self._weights = [0.0] * taps
+        self._history = [0.0] * taps
+        self._step = step
+
+    def process(self, frame: NativeMixFrame) -> NativeMixFrame:
+        """Estimate far-end leakage from near-end PCM and return the residual."""
+        if len(frame.far_end) != len(frame.near_end) or len(frame.far_end) % 2:
+            raise ValueError("mix buffers must have equal complete PCM16 samples")
+        far = struct.unpack(f"<{len(frame.far_end) // 2}h", frame.far_end)
+        near = struct.unpack(f"<{len(frame.near_end) // 2}h", frame.near_end)
+        cleaned = []
+        for desired, reference in zip(near, far):
+            self._history.insert(0, reference / 32768.0)
+            self._history.pop()
+            estimate = sum(weight * sample for weight, sample in zip(self._weights, self._history))
+            error = desired / 32768.0 - estimate
+            energy = 1e-4 + sum(sample * sample for sample in self._history)
+            correction = self._step * error / energy
+            for index, sample in enumerate(self._history):
+                self._weights[index] += correction * sample
+            cleaned.append(max(-32768, min(32767, round(error * 32768))))
+        return NativeMixFrame(
+            frame.far_end,
+            frame.near_end,
+            struct.pack(f"<{len(cleaned)}h", *cleaned),
+        )
 
 
 class NativeTalkPacketizer:
@@ -581,6 +614,7 @@ class NativeTalkSession:
         self._audio_encoder = Dvi4Encoder()
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
+        self._aec = AdaptiveEchoCanceller()
         self._mix_frame_count = 0
         self._last_mix_frame_at: float | None = None
         self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes]] = asyncio.Queue()
@@ -731,9 +765,10 @@ class NativeTalkSession:
                     f"interval={interval} extension={len(extension)} payload={len(payload)}"
                 )
                 mix_frame = parse_native_mix_frame(payload)
-                if self.mix_frame_callback is not None:
-                    if mix_frame is not None:
-                        self.mix_frame_callback(mix_frame)
+                if mix_frame is not None:
+                    cleaned_frame = self._aec.process(mix_frame)
+                    if self.mix_frame_callback is not None:
+                        self.mix_frame_callback(cleaned_frame)
                 continue
             await self._response_queue.put((header, extension, payload))
 
