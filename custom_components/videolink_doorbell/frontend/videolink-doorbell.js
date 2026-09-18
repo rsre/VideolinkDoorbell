@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.16-native-talk1";
+const CARD_VERSION = "0.12.16-native-talk2";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -574,6 +574,7 @@ class VideolinkDoorbellCard extends HTMLElement {
             action: "subscribe",
             entity_id: this._config.entity,
           },
+          { resubscribe: false },
         );
         await this._startNativeTalkCapture(this._micStream);
       } else if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
@@ -709,7 +710,7 @@ class VideolinkDoorbellCard extends HTMLElement {
             });
           })
           .catch((error) => {
-            this._diagnostics.nativeTalkError = error?.message || String(error);
+            this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
           });
       }
     };
@@ -724,7 +725,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSource?.disconnect();
     this._nativeGain?.disconnect();
     if (this._nativeMixUnsubscribe) {
-      this._nativeMixUnsubscribe();
+      // subscribeMessage() returns an async unsubscribe function. The custom
+      // native-talk command is not a HA event subscription, so HA may reject
+      // the cleanup request; never leave that rejection unhandled.
+      await Promise.resolve()
+        .then(() => this._nativeMixUnsubscribe())
+        .catch((error) => {
+          this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+        });
       this._nativeMixUnsubscribe = undefined;
     }
     await this._nativeSendChain.catch(() => undefined);
@@ -733,7 +741,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       action: "stop",
       entity_id: this._config.entity,
     }).catch((error) => {
-      this._diagnostics.nativeTalkError = error?.message || String(error);
+      this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
     });
     if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
     await this._nativePlaybackChain.catch(() => undefined);
@@ -752,8 +760,19 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackChain = this._nativePlaybackChain
       .then(() => this._playNativeMixFrame(message?.pcm || message?.event?.pcm))
       .catch((error) => {
-        this._diagnostics.nativeTalkError = error?.message || String(error);
+        this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
       });
+  }
+
+  _formatNativeTalkError(error) {
+    if (error?.code && error?.message) return `${error.code}: ${error.message}`;
+    if (error?.message) return error.message;
+    if (error?.code) return String(error.code);
+    try {
+      return JSON.stringify(error);
+    } catch (_serializationError) {
+      return String(error);
+    }
   }
 
   async _playNativeMixFrame(encoded) {
@@ -779,7 +798,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       source.start(start);
       this._nativePlaybackNextTime = start + buffer.duration;
     } catch (error) {
-      this._diagnostics.nativeTalkError = error?.message || String(error);
+      this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
     }
   }
 

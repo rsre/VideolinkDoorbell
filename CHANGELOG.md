@@ -2,6 +2,15 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.17] - 2026-09-18
+
+### Fixed
+
+- Fixed native talk subscription cleanup causing unhandled WebSocket promise
+  rejections during two-way audio.
+- Disabled automatic resubscription for the custom native-talk command and
+  improved native WebSocket error reporting.
+
 ## [0.12.16] - 2026-09-17
 
 ### Fixed
