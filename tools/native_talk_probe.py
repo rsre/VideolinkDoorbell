@@ -36,7 +36,7 @@ async def probe(args: argparse.Namespace) -> int:
         print(f"Connecting to {args.host}:9000, channel {args.channel}")
         await session.login()
         print("Native login: OK")
-        ability = await session.talk_ability(native_request=True)
+        ability = await session.talk_ability()
         config = ability.to_config(args.channel)
         print(
             "Talk ability: "

@@ -789,19 +789,16 @@ class NativeTalkSession:
             return await self.client.receive()
         return await self._response_queue.get()
 
-    async def talk_ability(self, *, native_request: bool = False) -> TalkAbility:
-        """Read and select the camera's advertised ADPCM talk profile."""
+    async def talk_ability(self) -> TalkAbility:
+        """Read and select the camera's native ADPCM talk profile."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
-        extension = b"" if native_request else XML_DECLARATION + (
-            f'<Extension version="1.1"><channelId>{self.channel}</channelId></Extension>'.encode()
-        )
         await self.client.send(
             serialize_talk_message(
                 msg_id=MSG_ID_TALK_ABILITY,
                 msg_num=self.client.next_message_number(),
                 channel_id=self.channel,
-                extension=self._encrypt_xml(self.channel, extension),
+                extension=b"",
             )
         )
         header, _, payload = await self.client.receive()
@@ -819,17 +816,6 @@ class NativeTalkSession:
         if talk is None:
             tags = ",".join(local_name(node.tag) for node in root.iter())
             snippet = xml[:240].decode(errors="replace")
-            # This doorbell's firmware routes the generic XML command 10 to
-            # VideoInput instead of exposing the native BCSDK talk ability.
-            # The APK's BCSDK path uses command 2157 and supplies the same
-            # profile below to its talk opener.  The profile has been verified
-            # by the accepted config/audio path on this model.
-            if "VideoInput" in tags and not native_request:
-                self._trace(
-                    "talk ability: camera returned VideoInput for generic XML "
-                    "query; using verified native doorbell profile"
-                )
-                return TalkAbility()
             raise ValueError(
                 f"camera talk ability response did not contain TalkAbility "
                 f"(root={local_name(root.tag)}, tags={tags}, xml={snippet!r})"

@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.18] - 2026-09-18
+
+### Fixed
+
+- Simplified native talk ability negotiation to always use the verified native
+  request path, matching the diagnostic probe and avoiding the generic
+  `VideoInput` response on affected firmware.
+
 ## [0.12.17] - 2026-09-18
 
 ### Fixed
