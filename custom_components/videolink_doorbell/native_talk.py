@@ -612,6 +612,7 @@ class NativeTalkSession:
         self._logged_in = False
         self._audio_sequence = 0
         self._audio_encoder = Dvi4Encoder()
+        self._audio_send_lock = asyncio.Lock()
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
         self._aec = AdaptiveEchoCanceller()
@@ -801,10 +802,18 @@ class NativeTalkSession:
                 extension=b"",
             )
         )
-        header, _, payload = await self.client.receive()
+        header, extension, payload = await self.client.receive()
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk ability request: {header.response_code}")
-        xml = self._xml_bytes(payload, key=self._aes_key)
+        try:
+            xml = self._xml_bytes(payload, key=self._aes_key)
+        except ValueError as payload_error:
+            # Firmware variants place the header-only native ability response
+            # in the Baichuan extension field instead of the payload field.
+            try:
+                xml = self._xml_bytes(extension, key=self._aes_key)
+            except ValueError:
+                raise payload_error
         root = ElementTree.fromstring(xml)
         def local_name(tag: str) -> str:
             return tag.rsplit("}", 1)[-1]
@@ -857,16 +866,17 @@ class NativeTalkSession:
         """Send one already-encoded ADPCM block."""
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
-        self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
-        await self.client.send(
-            serialize_talk_audio_message(
-                adpcm_data,
-                msg_num=self.client.next_message_number(),
-                channel_id=self.channel,
-                sequence=self._audio_sequence,
-                encrypt_xml=self._encrypt_xml,
+        async with self._audio_send_lock:
+            self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
+            await self.client.send(
+                serialize_talk_audio_message(
+                    adpcm_data,
+                    msg_num=self.client.next_message_number(),
+                    channel_id=self.channel,
+                    sequence=self._audio_sequence,
+                    encrypt_xml=self._encrypt_xml,
+                )
             )
-        )
 
     async def send_pcm(self, pcm16le: bytes) -> None:
         """Encode and send one PCM talk frame using continuous DVI-4 state."""

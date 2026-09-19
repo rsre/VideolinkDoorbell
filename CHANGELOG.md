@@ -2,6 +2,19 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.19] - 2026-09-19
+
+### Added
+
+- Added a native-talk UI test-tone button for verifying camera speaker output
+  without microphone permission.
+
+### Fixed
+
+- Prevented WebSocket acknowledgement latency from making native audio choppy
+  by pipelining browser frames and serializing camera writes.
+- Accepted native talk-ability XML returned in the Baichuan extension field.
+
 ## [0.12.18] - 2026-09-18
 
 ### Fixed

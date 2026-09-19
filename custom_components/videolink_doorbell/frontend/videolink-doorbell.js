@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.16-native-talk2";
+const CARD_VERSION = "0.12.18-native-talk2";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -26,9 +26,11 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeMixUnsubscribe = undefined;
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
+    this._nativePendingSends = new Set();
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
     this._nativeTalking = false;
+    this._toneTesting = false;
     this._sessionId = undefined;
     this._pendingCandidates = [];
     this._pendingRemoteCandidates = [];
@@ -218,6 +220,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         ${this._config.hide_controls ? "" : `<div class="controls">
           <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
           <button class="talk" type="button" aria-label="Hold to talk">Hold to talk</button>
+          ${this._config.native_talk ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
         ${this._config.debug ? '<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre><button class="copy-diagnostics" type="button">Copy diagnostics</button></details>' : ""}
       </ha-card>`;
@@ -228,6 +231,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._status = this.shadowRoot.querySelector(".status");
     this._talkButton = this.shadowRoot.querySelector(".talk");
     this._soundButton = this.shadowRoot.querySelector(".sound");
+    this._toneButton = this.shadowRoot.querySelector(".tone");
     this._diagnosticsOutput = this.shadowRoot.querySelector(".diagnostics pre");
     this._copyDiagnosticsButton = this.shadowRoot.querySelector(".copy-diagnostics");
 
@@ -240,6 +244,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talkButton?.addEventListener("keydown", this._talkKeyDown);
     this._talkButton?.addEventListener("keyup", this._talkKeyUp);
     this._soundButton?.addEventListener("click", this._toggleSound);
+    this._toneButton?.addEventListener("click", this._sendTestTone);
     this._copyDiagnosticsButton?.addEventListener("click", this._copyDiagnostics);
     const stage = this.shadowRoot.querySelector(".stage");
     if (stage && !this._config.disable_popup) {
@@ -531,7 +536,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._setStatus("HTTPS is required for microphone access");
       return;
     }
-    if (this._talking || this._micPending || !this._streamReady || !this._audioSender) return;
+    if (this._talking || this._toneTesting || this._micPending || !this._streamReady || !this._audioSender) return;
     this._talkRequested = true;
     this._micPending = true;
     this._diagnostics.micRequestedAt = performance.now();
@@ -617,6 +622,68 @@ class VideolinkDoorbellCard extends HTMLElement {
     await this._stopMicrophone();
   };
 
+  _sendTestTone = async (event) => {
+    event?.preventDefault();
+    if (
+      !this._config.native_talk || this._toneTesting || this._talking
+      || !this._streamReady || !this._hass
+    ) return;
+    this._toneTesting = true;
+    this._updateToneButton();
+    this._setStatus("Sending test tone…");
+    const frameCount = 16;
+    const frameSize = 1024;
+    const sampleRate = 16000;
+    const pending = [];
+    try {
+      await this._hass.callWS({
+        type: "videolink_doorbell/native_talk",
+        action: "start",
+        entity_id: this._config.entity,
+      });
+      const startedAt = performance.now();
+      for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+        const pcm = new Int16Array(frameSize);
+        for (let sampleIndex = 0; sampleIndex < frameSize; sampleIndex++) {
+          const sample = frameIndex * frameSize + sampleIndex;
+          pcm[sampleIndex] = Math.round(
+            9000 * Math.sin((2 * Math.PI * 440 * sample) / sampleRate),
+          );
+        }
+        let binary = "";
+        const bytes = new Uint8Array(pcm.buffer);
+        for (let index = 0; index < bytes.length; index += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+        }
+        const deadline = startedAt + frameIndex * 64;
+        const wait = deadline - performance.now();
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        pending.push(this._hass.callWS({
+          type: "videolink_doorbell/native_talk",
+          action: "audio",
+          entity_id: this._config.entity,
+          pcm: btoa(binary),
+        }));
+      }
+      await Promise.all(pending);
+      this._setStatus("Test tone sent");
+    } catch (error) {
+      this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+      this._setStatus(`Test tone failed: ${this._diagnostics.nativeTalkError}`);
+    } finally {
+      await Promise.allSettled(pending);
+      await this._hass.callWS({
+        type: "videolink_doorbell/native_talk",
+        action: "stop",
+        entity_id: this._config.entity,
+      }).catch((error) => {
+        this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+      });
+      this._toneTesting = false;
+      this._updateToneButton();
+    }
+  };
+
   _talkKeyDown = (event) => {
     if ((event.key === " " || event.key === "Enter") && !event.repeat) this._beginTalk(event);
   };
@@ -696,22 +763,24 @@ class VideolinkDoorbellCard extends HTMLElement {
           binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
         }
         const encoded = btoa(binary);
-        this._nativeSendChain = this._nativeSendChain
-          .then(() => {
-            this._diagnostics.nativeQueueWaitMs = performance.now() - capturedAt;
-            const sentAt = performance.now();
-            return this._hass.callWS({
+        this._diagnostics.nativeQueueWaitMs = performance.now() - capturedAt;
+        const sentAt = performance.now();
+        const request = this._hass.callWS({
             type: "videolink_doorbell/native_talk",
             action: "audio",
             entity_id: this._config.entity,
             pcm: encoded,
-            }).then(() => {
-              this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
-            });
+          }).then(() => {
+            this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
           })
           .catch((error) => {
             this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
           });
+        this._nativePendingSends.add(request);
+        request.then(
+          () => this._nativePendingSends.delete(request),
+          () => this._nativePendingSends.delete(request),
+        );
       }
     };
     source.connect(processor);
@@ -735,7 +804,8 @@ class VideolinkDoorbellCard extends HTMLElement {
         });
       this._nativeMixUnsubscribe = undefined;
     }
-    await this._nativeSendChain.catch(() => undefined);
+    await Promise.allSettled(this._nativePendingSends);
+    this._nativePendingSends.clear();
     await this._hass.callWS({
       type: "videolink_doorbell/native_talk",
       action: "stop",
@@ -753,6 +823,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackContext = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
+    this._nativeSendChain = Promise.resolve();
     this._nativePcm = [];
   }
 
@@ -833,6 +904,13 @@ class VideolinkDoorbellCard extends HTMLElement {
           : "Hold to talk";
     this._talkButton.title = insecure ? "HTTPS is required for microphone access" : "";
     this._talkButton.setAttribute("aria-busy", String(loading));
+    this._updateToneButton();
+  }
+
+  _updateToneButton() {
+    if (!this._toneButton) return;
+    this._toneButton.disabled = this._toneTesting || this._talking || !this._streamReady;
+    this._toneButton.textContent = this._toneTesting ? "Sending…" : "Test tone";
   }
 
   _startDiagnostics() {
