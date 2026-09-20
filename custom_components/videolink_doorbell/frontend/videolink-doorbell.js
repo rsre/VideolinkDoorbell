@@ -634,7 +634,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     const frameCount = 16;
     const frameSize = 1024;
     const sampleRate = 16000;
-    const pending = [];
     try {
       await this._hass.callWS({
         type: "videolink_doorbell/native_talk",
@@ -658,20 +657,21 @@ class VideolinkDoorbellCard extends HTMLElement {
         const deadline = startedAt + frameIndex * 64;
         const wait = deadline - performance.now();
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-        pending.push(this._hass.callWS({
+        // Keep frames strictly ordered. Native DVI-4 encoding is stateful,
+        // and queuing all WebSocket requests concurrently can reorder frames
+        // at the server and turn the tone into a short blip.
+        await this._hass.callWS({
           type: "videolink_doorbell/native_talk",
           action: "audio",
           entity_id: this._config.entity,
           pcm: btoa(binary),
-        }));
+        });
       }
-      await Promise.all(pending);
       this._setStatus("Test tone sent");
     } catch (error) {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
       this._setStatus(`Test tone failed: ${this._diagnostics.nativeTalkError}`);
     } finally {
-      await Promise.allSettled(pending);
       await this._hass.callWS({
         type: "videolink_doorbell/native_talk",
         action: "stop",

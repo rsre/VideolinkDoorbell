@@ -621,6 +621,8 @@ class NativeTalkSession:
         self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes]] = asyncio.Queue()
         self._mix_reader_task: asyncio.Task[None] | None = None
         self.max_encryption = max_encryption
+        self.last_talk_ability_profiles: list[TalkAbility] = []
+        self.last_talk_ability_xml: bytes | None = None
 
     def _trace(self, message: str) -> None:
         if self.trace is not None:
@@ -815,6 +817,7 @@ class NativeTalkSession:
             except ValueError:
                 raise payload_error
         root = ElementTree.fromstring(xml)
+        self.last_talk_ability_xml = xml
         def local_name(tag: str) -> str:
             return tag.rsplit("}", 1)[-1]
 
@@ -832,35 +835,32 @@ class NativeTalkSession:
         duplexes = [node.text for node in children_named(talk, "duplex") if node.text]
         modes = [node.text for node in children_named(talk, "audioStreamMode") if node.text]
         configs = [node for node in children_named(talk, "audioConfig")]
-        selected = next(
-            (
-                config
-                for config in configs
-                if next(
-                    (node.text for node in children_named(config, "audioType") if node.text),
-                    "",
+        profiles = []
+        for config in configs:
+            audio_type = next(
+                (node.text for node in children_named(config, "audioType") if node.text),
+                "",
+            )
+            profiles.append(
+                TalkAbility(
+                    version=talk.attrib.get("version", "1.1"),
+                    duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
+                    audio_stream_mode=(
+                        "mixAudioStream" if "mixAudioStream" in modes
+                        else ("speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"))
+                    ),
+                    audio_type=audio_type,
+                    sample_rate=int(_xml_child_text(config, "sampleRate", str(SAMPLE_RATE))),
+                    sample_precision=int(_xml_child_text(config, "samplePrecision", "16")),
+                    length_per_encoder=int(_xml_child_text(config, "lengthPerEncoder", str(SAMPLES_PER_FRAME))),
+                    sound_track=_xml_child_text(config, "soundTrack", "mono"),
                 )
-                == "adpcm"
-            ),
-            None,
-        )
+            )
+        self.last_talk_ability_profiles = profiles
+        selected = next((profile for profile in profiles if profile.audio_type == "adpcm"), None)
         if selected is None:
             raise ValueError("camera did not advertise an ADPCM talk profile")
-        return TalkAbility(
-            version=talk.attrib.get("version", "1.1"),
-            duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
-            audio_stream_mode=(
-                "mixAudioStream" if "mixAudioStream" in modes
-                else ("speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"))
-            ),
-            audio_type="adpcm",
-            sample_rate=int(_xml_child_text(selected, "sampleRate", str(SAMPLE_RATE))),
-            sample_precision=int(_xml_child_text(selected, "samplePrecision", "16")),
-            length_per_encoder=int(
-                _xml_child_text(selected, "lengthPerEncoder", str(SAMPLES_PER_FRAME))
-            ),
-            sound_track=_xml_child_text(selected, "soundTrack", "mono"),
-        )
+        return selected
 
     async def send_audio(self, adpcm_data: bytes) -> None:
         """Send one already-encoded ADPCM block."""
@@ -880,7 +880,21 @@ class NativeTalkSession:
 
     async def send_pcm(self, pcm16le: bytes) -> None:
         """Encode and send one PCM talk frame using continuous DVI-4 state."""
-        await self.send_audio(self._audio_encoder.encode_pcm16le(pcm16le))
+        # The encoder carries predictor/index state across frames.  Keep the
+        # encoding inside the same lock as transmission so concurrent
+        # WebSocket audio commands cannot corrupt or reorder that state.
+        async with self._audio_send_lock:
+            encoded = self._audio_encoder.encode_pcm16le(pcm16le)
+            self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
+            await self.client.send(
+                serialize_talk_audio_message(
+                    encoded,
+                    msg_num=self.client.next_message_number(),
+                    channel_id=self.channel,
+                    sequence=self._audio_sequence,
+                    encrypt_xml=self._encrypt_xml,
+                )
+            )
 
     async def stop_talk(self) -> None:
         """Send the native talk reset command."""
