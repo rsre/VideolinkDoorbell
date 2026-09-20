@@ -32,6 +32,7 @@ async def probe(args: argparse.Namespace) -> int:
         trace=print,
         max_encryption=args.max_encryption,
     )
+    talk_open = False
     try:
         print(f"Connecting to {args.host}:9000, channel {args.channel}")
         await session.login()
@@ -45,6 +46,7 @@ async def probe(args: argparse.Namespace) -> int:
             f"duplex={ability.duplex}, mode={ability.audio_stream_mode}"
         )
         await session.open_talk(config)
+        talk_open = True
         print("Talk configuration: acknowledged")
         if args.wav or args.tone_seconds:
             samples = _read_audio(args.wav, config.sample_rate) if args.wav else _tone(
@@ -74,11 +76,20 @@ async def probe(args: argparse.Namespace) -> int:
                     f"median={statistics.median(intervals) * 1000:.1f} ms"
                 )
             print(f"TCP write: max={max(send_durations) * 1000:.1f} ms")
+            # Let the camera drain its native audio queue before stopping the
+            # talk session. Closing immediately after the last TCP write can
+            # truncate or make the tail of the tone sound choppy.
+            await asyncio.sleep(args.drain)
         return 0
     except Exception as err:
         print(f"Native probe failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
     finally:
+        if talk_open:
+            try:
+                await session.stop_talk()
+            except Exception:
+                pass
         await session.close()
 
 
@@ -117,6 +128,10 @@ def main() -> int:
     parser.add_argument("--configure", action="store_true", help="send TalkConfig after login")
     parser.add_argument("--wav", help="mono 16-bit PCM WAV to play through the camera")
     parser.add_argument("--tone-seconds", type=float, help="generate a 440 Hz test tone")
+    parser.add_argument(
+        "--drain", type=float, default=1.0,
+        help="seconds to keep native talk open after sending audio (default: 1)",
+    )
     return asyncio.run(probe(parser.parse_args()))
 
 

@@ -79,3 +79,42 @@ python -m compileall custom_components/videolink_doorbell
 python -m pytest -q tests/test_api.py tests/test_go2rtc_adapter.py
 node --test tests/videolink-card.test.js
 ```
+
+For local native-talk timing tests, capture the camera's RTSP audio directly
+with `ffmpeg` and optionally send a 440 Hz tone through the native Baichuan
+path:
+
+```bash
+python tools/native_talk_rtsp_probe.py \
+  --host 192.168.1.40 --username admin --channel 0 \
+  --tone-seconds 2 --observe 5 --play --record /tmp/videolink-rtsp.wav
+```
+
+The probe reports whether the tone is detected in the RTSP audio and estimates
+the time from the first native tone frame to that observation.
+
+The benchmark separates the native and direct RTSP send/listen paths:
+
+* `native`: Baichuan native send, direct camera RTSP listen.
+* `direct-rtsp`: direct camera RTSP backchannel send, direct camera RTSP listen.
+
+To validate direct RTSP audio reception without sending, run capture-only tests:
+
+```bash
+python tools/two_way_audio_benchmark.py \
+  --host 192.168.1.40 --username admin --channel 0 \
+  --capture-runs 3 --observe 5 --play
+```
+
+To compare repeated native and direct RTSP backchannel runs, use the benchmark
+harness:
+
+```bash
+python tools/two_way_audio_benchmark.py \
+  --host 192.168.1.40 --username admin --channel 0 \
+  --native-runs 5 --direct-rtsp-runs 5 \
+  --observe 5
+```
+
+The report shows mean, median, min/max, first-run (cold), and subsequent-run
+(warm) latency for native and direct RTSP.
