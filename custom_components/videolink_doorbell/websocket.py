@@ -27,7 +27,7 @@ def async_register(hass: HomeAssistant) -> None:
 @websocket_api.websocket_command(
     {
         vol.Required("type"): COMMAND,
-        vol.Required("action"): vol.In({"start", "audio", "stop", "subscribe"}),
+        vol.Required("action"): vol.In({"start", "audio", "tone", "stop", "subscribe"}),
         vol.Required("entity_id"): cv.entity_id,
         vol.Optional("pcm"): str,
     }
@@ -52,6 +52,8 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         elif action == "audio":
             pcm = _decode_pcm(msg.get("pcm"))
             await client.native_talk_audio(pcm)
+        elif action == "tone":
+            await client.native_talk_tone(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
         elif action == "stop":
             await client.native_talk_stop()
         else:

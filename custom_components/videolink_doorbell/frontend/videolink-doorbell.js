@@ -631,42 +631,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._toneTesting = true;
     this._updateToneButton();
     this._setStatus("Sending test tone…");
-    const frameCount = 16;
-    const frameSize = 1024;
-    const sampleRate = 16000;
     try {
       await this._hass.callWS({
         type: "videolink_doorbell/native_talk",
-        action: "start",
+        action: "tone",
         entity_id: this._config.entity,
       });
-      const startedAt = performance.now();
-      for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
-        const pcm = new Int16Array(frameSize);
-        for (let sampleIndex = 0; sampleIndex < frameSize; sampleIndex++) {
-          const sample = frameIndex * frameSize + sampleIndex;
-          pcm[sampleIndex] = Math.round(
-            9000 * Math.sin((2 * Math.PI * 440 * sample) / sampleRate),
-          );
-        }
-        let binary = "";
-        const bytes = new Uint8Array(pcm.buffer);
-        for (let index = 0; index < bytes.length; index += 0x8000) {
-          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-        }
-        const deadline = startedAt + frameIndex * 64;
-        const wait = deadline - performance.now();
-        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-        // Keep frames strictly ordered. Native DVI-4 encoding is stateful,
-        // and queuing all WebSocket requests concurrently can reorder frames
-        // at the server and turn the tone into a short blip.
-        await this._hass.callWS({
-          type: "videolink_doorbell/native_talk",
-          action: "audio",
-          entity_id: this._config.entity,
-          pcm: btoa(binary),
-        });
-      }
       this._setStatus("Test tone sent");
     } catch (error) {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);

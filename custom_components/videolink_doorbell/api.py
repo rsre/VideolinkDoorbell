@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 import secrets
 import ssl
+import struct
+import time
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -79,6 +82,7 @@ class VideolinkClient:
         self._rtmp_port: int | None = None
         self._login_lock = asyncio.Lock()
         self._native_talk: NativeTalkSession | None = None
+        self._native_talk_config: TalkConfig | None = None
         self._native_talk_lock = asyncio.Lock()
 
     @staticmethod
@@ -311,10 +315,12 @@ class VideolinkClient:
                 try:
                     await self._native_talk.login()
                     ability = await self._native_talk.talk_ability()
-                    await self._native_talk.open_talk(ability.to_config(channel))
+                    self._native_talk_config = ability.to_config(channel)
+                    await self._native_talk.open_talk(self._native_talk_config)
                 except Exception:
                     await self._native_talk.close()
                     self._native_talk = None
+                    self._native_talk_config = None
                     raise
 
     async def native_talk_audio(self, pcm16le: bytes) -> None:
@@ -322,6 +328,29 @@ class VideolinkClient:
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
         await self._native_talk.send_pcm(pcm16le)
+
+    async def native_talk_tone(self, channel: int, *, seconds: float = 1.0) -> None:
+        """Generate and send a test tone without browser audio/WebSocket frames."""
+        await self.native_talk_start(channel)
+        if self._native_talk is None or self._native_talk_config is None:
+            raise VideolinkConnectionError("Native talk session is not active")
+        config = self._native_talk_config
+        total_samples = int(seconds * config.sample_rate)
+        frame_size = config.length_per_encoder
+        samples = [
+            int(9000 * math.sin(2 * math.pi * 440 * index / config.sample_rate))
+            for index in range(total_samples)
+        ]
+        if len(samples) % frame_size:
+            samples.extend([0] * (frame_size - len(samples) % frame_size))
+        deadline = time.perf_counter()
+        for offset in range(0, len(samples), frame_size):
+            pcm = struct.pack(
+                f"<{frame_size}h", *samples[offset : offset + frame_size]
+            )
+            await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
+            await self._native_talk.send_pcm(pcm)
+            deadline += frame_size / config.sample_rate
 
     async def native_talk_set_mix_callback(self, callback) -> None:
         """Set the consumer for cleaned native mix audio."""
@@ -338,3 +367,4 @@ class VideolinkClient:
                 finally:
                     await self._native_talk.close()
                     self._native_talk = None
+                    self._native_talk_config = None
