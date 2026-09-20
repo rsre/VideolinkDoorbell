@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import struct
 import sys
+import threading
 import time
 import wave
 from urllib.parse import quote
@@ -28,41 +29,66 @@ DETECT_FRAME_SAMPLES = 1024
 
 
 class _GstAudioPlayer:
-    """Play decoded PCM through the same autoaudiosink as test.py."""
+    """Play the camera RTSP audio using test.py's GStreamer pipeline."""
 
-    def __init__(self) -> None:
+    def __init__(self, url: str) -> None:
         try:
             import gi
             gi.require_version("Gst", "1.0")
-            from gi.repository import Gst
+            from gi.repository import GLib, Gst
         except (ImportError, ValueError) as err:
             raise RuntimeError(
                 "GStreamer with PyGObject is required for --play"
             ) from err
         self.Gst = Gst
+        self.GLib = GLib
         Gst.init(None)
-        self.pipeline = Gst.parse_launch(
-            "appsrc name=source is-live=true format=time do-timestamp=true "
-            "caps=audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1 "
-            "! audioconvert ! audioresample ! autoaudiosink"
-        )
-        self.source = self.pipeline.get_by_name("source")
+        self.pipeline = Gst.Pipeline.new("rtsp-audio-player")
+        self.source = Gst.ElementFactory.make("rtspsrc", "camera-player")
         if self.source is None:
-            raise RuntimeError("failed to create GStreamer audio source")
+            raise RuntimeError("failed to create GStreamer RTSP source")
+        self.source.set_property("location", url)
+        self.source.set_property("latency", 100)
+        self.source.set_property("protocols", 4)  # TCP
+        self.pipeline.add(self.source)
+        self.source.connect("pad-added", self._on_pad_added)
         self.pipeline.set_state(Gst.State.PLAYING)
+        self.loop = GLib.MainLoop()
+        self.loop_thread = threading.Thread(
+            target=self.loop.run,
+            name="videolink-gst-loop",
+            daemon=True,
+        )
+        self.loop_thread.start()
 
-    def write(self, data: bytes) -> None:
-        buffer = self.Gst.Buffer.new_allocate(None, len(data), None)
-        buffer.fill(0, data)
-        result = self.source.emit("push-buffer", buffer)
-        if result != self.Gst.FlowReturn.OK:
-            raise RuntimeError(f"GStreamer audio playback failed: {result.value_nick}")
+    def _on_pad_added(self, _source, pad) -> None:
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        structure = caps.get_structure(0)
+        if structure.get_string("media") != "audio":
+            return
+        if structure.get_string("encoding-name") != "MPEG4-GENERIC":
+            return
+        elements = [
+            self.Gst.ElementFactory.make("rtpmp4gdepay", None),
+            self.Gst.ElementFactory.make("avdec_aac", None),
+            self.Gst.ElementFactory.make("audioconvert", None),
+            self.Gst.ElementFactory.make("audioresample", None),
+            self.Gst.ElementFactory.make("autoaudiosink", None),
+        ]
+        if any(element is None for element in elements):
+            return
+        for element in elements:
+            self.pipeline.add(element)
+            element.sync_state_with_parent()
+        for left, right in zip(elements, elements[1:]):
+            if not left.link(right):
+                return
+        pad.link(elements[0].get_static_pad("sink"))
 
     def close(self) -> None:
-        try:
-            self.source.emit("end-of-stream")
-        finally:
-            self.pipeline.set_state(self.Gst.State.NULL)
+        self.pipeline.set_state(self.Gst.State.NULL)
+        self.loop.quit()
+        self.loop_thread.join(timeout=2)
 
 
 class RtspAudioCapture:
@@ -91,7 +117,7 @@ class RtspAudioCapture:
             self.writer.setsampwidth(2)
             self.writer.setframerate(SAMPLE_RATE)
         if self.play:
-            self.player = _GstAudioPlayer()
+            self.player = _GstAudioPlayer(self.url)
         self.process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "warning",
             "-fflags", "nobuffer", "-flags", "low_delay",
@@ -115,12 +141,6 @@ class RtspAudioCapture:
             self._buffer.extend(chunk)
             if self.writer:
                 self.writer.writeframes(chunk)
-            if self.player:
-                try:
-                    self.player.write(chunk)
-                except RuntimeError:
-                    self.player.close()
-                    self.player = None
             while len(self._buffer) >= DETECT_FRAME_SAMPLES * 2:
                 frame = bytes(self._buffer[: DETECT_FRAME_SAMPLES * 2])
                 del self._buffer[: DETECT_FRAME_SAMPLES * 2]
