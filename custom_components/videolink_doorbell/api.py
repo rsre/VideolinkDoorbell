@@ -329,7 +329,7 @@ class VideolinkClient:
             raise VideolinkConnectionError("Native talk session is not active")
         await self._native_talk.send_pcm(pcm16le)
 
-    async def native_talk_tone(self, channel: int, *, seconds: float = 1.0) -> None:
+    async def native_talk_tone(self, channel: int, *, seconds: float = 2.0) -> None:
         """Generate and send a test tone without browser audio/WebSocket frames."""
         await self.native_talk_start(channel)
         if self._native_talk is None or self._native_talk_config is None:
@@ -338,7 +338,7 @@ class VideolinkClient:
         total_samples = int(seconds * config.sample_rate)
         frame_size = config.length_per_encoder
         samples = [
-            int(9000 * math.sin(2 * math.pi * 440 * index / config.sample_rate))
+            int(10000 * math.sin(2 * math.pi * 440 * index / config.sample_rate))
             for index in range(total_samples)
         ]
         if len(samples) % frame_size:
