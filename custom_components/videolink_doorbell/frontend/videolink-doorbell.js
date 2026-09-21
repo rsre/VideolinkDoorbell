@@ -544,6 +544,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnostics.trackAttachMs = undefined;
     this._diagnostics.firstOutboundPacketMs = undefined;
     if (event.pointerId != null) this._talkButton.setPointerCapture?.(event.pointerId);
+    if (this._config.native_talk) {
+      // Native talk has its own echo/mix path. Make inbound audio audible as
+      // soon as PTT starts, including while microphone setup is in progress.
+      this._mutedBeforeTalk = this._muted;
+      this._muted = false;
+      if (this._video) this._video.muted = false;
+      this._updateSoundButton();
+    }
     this._updateTalkButton();
     try {
       this._micStream = await navigator.mediaDevices.getUserMedia({
@@ -600,7 +608,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       // Native talk has its own echo cancellation/mix path, so leave inbound
       // audio audible while experimental native PTT is active. Preserve the
       // existing mute-while-transmitting behavior for WebRTC talkback.
-      this._mutedBeforeTalk = this._muted;
+      if (!this._config.native_talk) this._mutedBeforeTalk = this._muted;
       if (!this._config.native_talk) {
         this._muted = true;
         if (this._video) this._video.muted = true;
@@ -666,7 +674,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   async _stopMicrophone() {
-    const restoreMuted = this._talking ? this._mutedBeforeTalk : undefined;
+    const restoreMuted = this._mutedBeforeTalk;
     this._talkRequested = false;
     if (this._microphoneGain && this._keepaliveContext) {
       this._microphoneGain.gain.setValueAtTime(0, this._keepaliveContext.currentTime);
