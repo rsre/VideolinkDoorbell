@@ -946,7 +946,7 @@ class NativeTalkChannel:
         self.mix_frame_callback = mix_frame_callback
         self.transport: NativeTalkSession | None = None
         self.talk_config: TalkConfig | None = None
-        self._audio_queue: asyncio.Queue[bytes] | None = None
+        self._audio_queue: asyncio.Queue[tuple[bytes, asyncio.Future[None]]] | None = None
         self._audio_worker: asyncio.Task[None] | None = None
         self._audio_error: Exception | None = None
         self._lifecycle_lock = asyncio.Lock()
@@ -987,13 +987,25 @@ class NativeTalkChannel:
         while True:
             if self._audio_queue is None:
                 return
-            pcm16le = await self._audio_queue.get()
+            pcm16le, completion = await self._audio_queue.get()
             try:
                 if self.transport is not None:
+                    await self.transport.send_pcm(pcm16le)
+                if not completion.done():
+                    completion.set_result(None)
+            except Exception as err:
+                self._audio_error = err
+                if not completion.done():
+                    completion.set_exception(err)
+                while True:
                     try:
-                        await self.transport.send_pcm(pcm16le)
-                    except Exception as err:
-                        self._audio_error = err
+                        _, pending = self._audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if not pending.done():
+                        pending.set_exception(err)
+                    self._audio_queue.task_done()
+                return
             finally:
                 self._audio_queue.task_done()
 
@@ -1002,8 +1014,12 @@ class NativeTalkChannel:
         if not self.active or self._audio_queue is None:
             raise RuntimeError("native talk session is not active")
         if self._audio_error is not None:
-            raise RuntimeError("native talk audio worker failed") from self._audio_error
-        await self._audio_queue.put(pcm16le)
+            raise RuntimeError(
+                f"native talk audio worker failed: {self._audio_error}"
+            ) from self._audio_error
+        completion = asyncio.get_running_loop().create_future()
+        await self._audio_queue.put((pcm16le, completion))
+        await completion
 
     def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:
         """Set the callback for cleaned camera mix frames."""
