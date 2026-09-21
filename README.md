@@ -61,8 +61,10 @@ Audio-only mode negotiates only camera audio and the push-to-talk backchannel.
   to the stream's native aspect ratio. The default is `contain`.
 - `enable_popup` to enable Home Assistant's native camera dialog when clicking the video. It defaults to false.
 - `hide_title` for a titleless card.
-- `hide_video` to switch the card to its compact, audio-only intercom mode.
-- `hide_controls` to hide both the mute and push-to-talk buttons.
+- `card_style` selects the card layout (defaults to `audio_video`):
+  - `audio_video` shows both video and audio controls.
+  - `video` shows video only.
+  - `audio` shows the audio-only intercom with controls.
 - `debug` to show debug information and metrics like live WebRTC transport and PTT timing diagnostics.
 - `talk_mode` selects the talkback path (defaults to `rtsp`):
   - `rtsp` uses the WebRTC/RTSP backchannel.

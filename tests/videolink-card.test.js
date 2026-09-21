@@ -29,10 +29,19 @@ test("the editor exposes the supported video modes", () => {
   ]);
 });
 
-test("hide_video selects compact audio-only behavior", () => {
+test("card style selects compact audio-only behavior", () => {
   const card = new CardUnderTest();
   card._render = () => undefined;
-  card.setConfig({ entity: "camera.front_door", hide_video: true });
+  card.setConfig({ entity: "camera.front_door", card_style: "audio" });
   assert.equal(card._audioOnly, true);
+  assert.equal(card._controlsHidden, false);
   assert.equal(card.getCardSize(), 2);
+});
+
+test("video-only card style hides controls", () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door", card_style: "video" });
+  assert.equal(card._audioOnly, false);
+  assert.equal(card._controlsHidden, true);
 });

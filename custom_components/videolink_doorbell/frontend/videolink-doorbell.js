@@ -70,8 +70,11 @@ class VideolinkDoorbellCard extends HTMLElement {
           { value: "full", label: "Full" },
         ] } } },
         { name: "hide_title", selector: { boolean: {} } },
-        { name: "hide_video", selector: { boolean: {} } },
-        { name: "hide_controls", selector: { boolean: {} } },
+        { name: "card_style", selector: { select: { mode: "dropdown", options: [
+          { value: "video", label: "Video only" },
+          { value: "audio", label: "Audio only" },
+          { value: "audio_video", label: "Audio and video" },
+        ] } } },
         { name: "enable_popup", selector: { boolean: {} } },
         { name: "talk_mode", selector: { select: { mode: "dropdown", options: [
           { value: "rtsp", label: "RTSP" },
@@ -84,8 +87,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         title: "Title",
         video_fit: "Video fit",
         hide_title: "Hide card title",
-        hide_video: "Hide video stream",
-        hide_controls: "Hide PTT and mute buttons",
+        card_style: "Card style",
         enable_popup: "Enable video popup",
         talk_mode: "Talk mode",
         debug: "Show stream diagnostics",
@@ -99,8 +101,11 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     const previous = this._config;
     const changed = previous?.entity !== config.entity;
-    const mediaChanged = changed || previous?.hide_video !== Boolean(config.hide_video);
-    const controlsHidden = !previous?.hide_controls && Boolean(config.hide_controls);
+    const cardStyle = ["video", "audio", "audio_video"].includes(config.card_style)
+      ? config.card_style
+      : "audio_video";
+    const mediaChanged = changed || previous?.card_style !== cardStyle;
+    const controlsHidden = Boolean(previous) && previous.card_style !== "video" && cardStyle === "video";
     const videoFit = ["cover", "contain", "fill", "full"].includes(config.video_fit)
       ? config.video_fit
       : "contain";
@@ -110,12 +115,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     const nativeTalkDisabled = previous?.talk_mode === "native" && talkMode !== "native";
     this._config = {
       hide_title: false,
-      hide_video: false,
-      hide_controls: false,
+      card_style: cardStyle,
       enable_popup: false,
       talk_mode: talkMode,
       debug: false,
       ...config,
+      card_style: cardStyle,
       video_fit: videoFit,
       talk_mode: talkMode,
     };
@@ -146,7 +151,11 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   get _audioOnly() {
-    return Boolean(this._config?.hide_video);
+    return this._config?.card_style === "audio";
+  }
+
+  get _controlsHidden() {
+    return this._config?.card_style === "video";
   }
 
   getGridOptions() {
@@ -231,8 +240,8 @@ class VideolinkDoorbellCard extends HTMLElement {
           <video autoplay playsinline muted></video>
           <div class="status">Connecting…</div>
         </div>`}
-        ${window.isSecureContext || this._config.hide_controls ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
-        ${this._config.hide_controls ? "" : `<div class="controls">
+        ${window.isSecureContext || this._controlsHidden ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
+        ${this._controlsHidden ? "" : `<div class="controls">
           <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
           <button class="talk" type="button" aria-label="Hold to talk">Hold to talk</button>
           ${this._config.talk_mode === "native" ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
@@ -376,7 +385,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           this._diagnostics.connectMs = performance.now() - this._diagnostics.startedAt;
           this._setStatus("");
           this._updateTalkButton();
-          if (this._config.talk_mode === "native" && !this._config.hide_controls) {
+          if (this._config.talk_mode === "native" && !this._controlsHidden) {
             this._ensureNativeTalkSession().catch((error) => {
               this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
               this._setStatus(`Native talk unavailable: ${this._diagnostics.nativeTalkError}`);
@@ -775,7 +784,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _ensureNativeTalkSession() {
-    if (this._config?.talk_mode !== "native" || this._config.hide_controls || !this._hass) return;
+    if (this._config?.talk_mode !== "native" || this._controlsHidden || !this._hass) return;
     if (this._nativeSessionReady) return;
     if (this._nativeSessionStarting) return this._nativeSessionStarting;
     this._nativeSessionStarting = (async () => {
