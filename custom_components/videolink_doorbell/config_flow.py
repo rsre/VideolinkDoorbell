@@ -44,16 +44,13 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return vol.Schema(
             {
                 vol.Required(
-                    CONF_HOST, default=values.get(CONF_HOST, "192.168.1.123")
+                    CONF_HOST, default=values.get(CONF_HOST, "192.168.1.40")
                 ): str,
                 vol.Required(CONF_PORT, default=values.get(CONF_PORT, 443)): vol.All(
                     vol.Coerce(int), vol.Range(min=1, max=65535)
                 ),
                 vol.Required(CONF_USERNAME, default=values.get(CONF_USERNAME, "")): str,
                 vol.Required(CONF_PASSWORD, default=values.get(CONF_PASSWORD, "")): str,
-                vol.Required(
-                    CONF_CHANNEL, default=values.get(CONF_CHANNEL, DEFAULT_CHANNEL)
-                ): vol.All(vol.Coerce(int), vol.Range(min=0)),
                 vol.Required(
                     CONF_STREAM, default=values.get(CONF_STREAM, DEFAULT_STREAM)
                 ): SelectSelector(
@@ -89,13 +86,13 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Build the stable per-channel config-entry unique ID."""
         normalized = VideolinkClient._normalize_host(user_input[CONF_HOST])
         device_id = info.serial or f"{normalized}:{user_input[CONF_PORT]}"
-        return f"{device_id}_channel_{user_input[CONF_CHANNEL]}"
+        return f"{device_id}_channel_{user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)}"
 
     def _connection_is_configured(self, user_input: dict[str, Any]) -> bool:
         """Detect an existing entry before a changing API serial can bypass it."""
         host = VideolinkClient._normalize_host(user_input[CONF_HOST])
         port = user_input[CONF_PORT]
-        channel = user_input[CONF_CHANNEL]
+        channel = user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         return any(
             VideolinkClient._normalize_host(other.data[CONF_HOST]) == host
             and other.data[CONF_PORT] == port
@@ -109,6 +106,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Collect and validate camera settings."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            user_input = {**user_input, CONF_CHANNEL: DEFAULT_CHANNEL}
             try:
                 info = await self._async_validate(user_input)
             except VideolinkAuthError:
@@ -135,8 +133,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
+            updated = {**entry.data, **user_input}
             try:
-                info = await self._async_validate(user_input)
+                info = await self._async_validate(updated)
             except VideolinkAuthError:
                 errors["base"] = "invalid_auth"
             except VideolinkConnectionError:
@@ -144,7 +143,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except VideolinkError:
                 errors["base"] = "unknown"
             else:
-                unique_id = self._unique_id(info, user_input)
+                unique_id = self._unique_id(info, updated)
                 if any(
                     other.entry_id != entry.entry_id and other.unique_id == unique_id
                     for other in self.hass.config_entries.async_entries(DOMAIN)
@@ -157,7 +156,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 return self.async_update_reload_and_abort(
                     entry,
-                    data_updates=user_input,
+                    data_updates=updated,
                 )
         return self.async_show_form(
             step_id="reconfigure",

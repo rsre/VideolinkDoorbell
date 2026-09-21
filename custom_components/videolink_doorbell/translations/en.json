@@ -19,7 +19,6 @@
           "port": "HTTPS port",
           "username": "Username",
           "password": "Password",
-          "channel": "Channel (zero-based)",
           "stream": "Video quality",
           "rtsp_port": "RTSP backchannel port",
           "verify_ssl": "Verify HTTPS certificate"
@@ -33,7 +32,6 @@
           "port": "HTTPS port",
           "username": "Username",
           "password": "Password",
-          "channel": "Channel (zero-based)",
           "stream": "Video quality",
           "rtsp_port": "RTSP backchannel port",
           "verify_ssl": "Verify HTTPS certificate"
