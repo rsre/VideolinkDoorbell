@@ -351,6 +351,9 @@ class VideolinkClient:
             await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
             await self._native_talk.send_pcm(pcm)
             deadline += frame_size / config.sample_rate
+        # The final TCP write can complete before the doorbell has played its
+        # queued audio. Match the CLI probe's drain before the card stops talk.
+        await asyncio.sleep(1.0)
 
     async def native_talk_set_mix_callback(self, callback) -> None:
         """Set the consumer for cleaned native mix audio."""
