@@ -804,7 +804,18 @@ class NativeTalkSession:
                 extension=b"",
             )
         )
-        header, extension, payload = await self.client.receive()
+        # Cameras can interleave unsolicited configuration responses (for
+        # example VideoInput) with the requested talk-ability response.
+        # Match the response message id instead of assuming the next packet
+        # belongs to this request.
+        while True:
+            header, extension, payload = await self.client.receive()
+            if header.message_id == MSG_ID_TALK_ABILITY:
+                break
+            self._trace(
+                f"ignoring unsolicited native response while reading talk ability: "
+                f"id={header.message_id} response={header.response_code}"
+            )
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk ability request: {header.response_code}")
         try:

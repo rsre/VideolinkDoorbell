@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import json
+import os
+import queue
 from pathlib import Path
 import statistics
 import struct
 import sys
+import threading
 import time
 import urllib.parse
 import requests
@@ -20,17 +25,22 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 CAMERA_HOST = "192.168.1.40"
 CAMERA_PORT = 554
-CAMERA_USERNAME = "admin"
-CAMERA_PASSWORD = "tocalo2020"
+CAMERA_USERNAME = os.environ.get("VIDEOLINK_USERNAME", "admin")
+CAMERA_PASSWORD = os.environ.get("VIDEOLINK_PASSWORD", "")
 CAMERA_CHANNEL = 0
 CAMERA_STREAM = "main"
 GO2RTC_URL = "http://ha.rsanzr.com:11984"
 GO2RTC_STREAM = "videolink_doorbell_141484745042827_channel_0"
-GO2RTC_USERNAME = "admin"
-GO2RTC_PASSWORD = "admin"
+GO2RTC_USERNAME = os.environ.get("VIDEOLINK_GO2RTC_USERNAME", "admin")
+GO2RTC_PASSWORD = os.environ.get("VIDEOLINK_GO2RTC_PASSWORD", "")
 AUDIO_URL = "https://ha.rsanzr.com/local/tone_440hz_16khz.wav"
+HA_URL = "https://ha.rsanzr.com"
+HA_USERNAME = os.environ.get("VIDEOLINK_HA_USERNAME", "")
+HA_PASSWORD = os.environ.get("VIDEOLINK_HA_PASSWORD", "")
+HA_ENTITY_ID = "camera.porton"
 TONE_SECONDS = 2.0
 OBSERVE_SECONDS = 5.0
+PTT_SECONDS = 5.0
 
 GO2RTC_BASE_URL = GO2RTC_URL
 GO2RTC_SESSION = requests.Session()
@@ -95,6 +105,174 @@ from native_talk_rtsp_probe import (  # noqa: E402
 from rtsp_backchannel import RtspBackchannel  # noqa: E402
 
 
+class HomeAssistantNativeTalk:
+    """The card's Home Assistant WebSocket bridge, for PTT testing."""
+
+    def __init__(self, base_url: str, username: str, password: str, entity_id: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self.entity_id = entity_id
+        self.websocket = None
+        self._command_id = 0
+
+    def _login_token(self) -> str:
+        if not self.username or not self.password:
+            raise RuntimeError(
+                "set VIDEOLINK_HA_USERNAME and VIDEOLINK_HA_PASSWORD for native PTT testing"
+            )
+        client_id = self.base_url + "/"
+        response = requests.post(
+            f"{self.base_url}/auth/login_flow",
+            json={
+                "handler": ["homeassistant", None],
+                "client_id": client_id,
+                "redirect_uri": client_id,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        flow = response.json()
+        response = requests.post(
+            f"{self.base_url}/auth/login_flow/{flow['flow_id']}",
+            json={
+                "client_id": client_id,
+                "username": self.username,
+                "password": self.password,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        code = response.json()["result"]
+        response = requests.post(
+            f"{self.base_url}/auth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()["access_token"]
+
+    async def connect(self) -> None:
+        try:
+            import websockets
+        except ImportError as err:
+            raise RuntimeError("websockets is required for native PTT testing") from err
+        token = await asyncio.to_thread(self._login_token)
+        websocket_url = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
+        self.websocket = await websockets.connect(f"{websocket_url}/api/websocket")
+        await self.websocket.recv()  # auth_required
+        await self.websocket.send(json.dumps({"type": "auth", "access_token": token}))
+        auth = json.loads(await self.websocket.recv())
+        if auth.get("type") != "auth_ok":
+            raise RuntimeError(f"Home Assistant WebSocket authentication failed: {auth}")
+
+    async def command(self, action: str, pcm: bytes | None = None) -> None:
+        if self.websocket is None:
+            raise RuntimeError("Home Assistant WebSocket is not connected")
+        self._command_id += 1
+        message = {
+            "id": self._command_id,
+            "type": "videolink_doorbell/native_talk",
+            "action": action,
+            "entity_id": self.entity_id,
+        }
+        if pcm is not None:
+            message["pcm"] = base64.b64encode(pcm).decode()
+        await self.websocket.send(json.dumps(message))
+        while True:
+            response = json.loads(await self.websocket.recv())
+            if response.get("id") != self._command_id:
+                continue
+            if not response.get("success"):
+                raise RuntimeError(response.get("error", response))
+            return
+
+    async def close(self) -> None:
+        if self.websocket is not None:
+            await self.websocket.close()
+            self.websocket = None
+
+
+class MicrophonePcmCapture:
+    """Capture 16 kHz mono PCM frames like the card's AudioContext path."""
+
+    def __init__(self) -> None:
+        self.pipeline = None
+        self.loop = None
+        self.loop_thread = None
+        self.samples = queue.Queue(maxsize=20)
+        self.buffer = bytearray()
+
+    def start(self) -> None:
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            from gi.repository import GLib, Gst
+        except (ImportError, ValueError) as err:
+            raise RuntimeError("GStreamer with PyGObject is required for native PTT testing") from err
+        Gst.init(None)
+        self._Gst = Gst
+        self.pipeline = Gst.parse_launch(
+            "autoaudiosrc ! audioconvert ! audioresample ! "
+            "audio/x-raw,format=S16LE,rate=16000,channels=1 ! "
+            "appsink name=microphone emit-signals=true sync=false max-buffers=20 drop=true"
+        )
+        sink = self.pipeline.get_by_name("microphone")
+        if sink is None:
+            raise RuntimeError("failed to create microphone appsink")
+
+        def on_sample(appsink):
+            sample = appsink.emit("pull-sample")
+            if sample is None:
+                return Gst.FlowReturn.ERROR
+            buffer = sample.get_buffer()
+            ok, mapped = buffer.map(Gst.MapFlags.READ)
+            if ok:
+                try:
+                    try:
+                        self.samples.put_nowait(bytes(mapped.data))
+                    except queue.Full:
+                        pass
+                finally:
+                    buffer.unmap(mapped)
+            return Gst.FlowReturn.OK
+
+        sink.connect("new-sample", on_sample)
+        self.pipeline.set_state(Gst.State.PLAYING)
+        self.loop = GLib.MainLoop()
+        self.loop_thread = threading.Thread(
+            target=self.loop.run,
+            name="videolink-microphone-gst-loop",
+            daemon=True,
+        )
+        self.loop_thread.start()
+
+    async def frame(self, timeout: float = 1.0) -> bytes:
+        while len(self.buffer) < 2048:
+            try:
+                self.buffer.extend(await asyncio.to_thread(self.samples.get, True, timeout))
+            except queue.Empty as err:
+                raise RuntimeError("microphone did not produce audio") from err
+        frame = bytes(self.buffer[:2048])
+        del self.buffer[:2048]
+        return frame
+
+    def close(self) -> None:
+        if self.pipeline is not None:
+            self.pipeline.set_state(self._Gst.State.NULL)
+            if self.loop is not None:
+                self.loop.quit()
+            if self.loop_thread is not None:
+                self.loop_thread.join(timeout=2)
+            self.pipeline = None
+            self.loop = None
+            self.loop_thread = None
+
+
 async def _send_native_tone(
     session: NativeTalkSession,
     seconds: float,
@@ -117,6 +295,47 @@ async def _send_native_tone(
                 on_first_sent(first_sent)
         deadline += block_size / sample_rate
     return first_sent or time.monotonic()
+
+
+async def _run_native_ptt(runs: int, seconds: float) -> None:
+    """Exercise the complete card path: mic -> HA WebSocket -> camera."""
+    microphone = MicrophonePcmCapture()
+    bridge = HomeAssistantNativeTalk(HA_URL, HA_USERNAME, HA_PASSWORD, HA_ENTITY_ID)
+    microphone.start()
+    await bridge.connect()
+    try:
+        reports: list[tuple[int, float, float]] = []
+        for run in range(1, runs + 1):
+            await bridge.command("start")
+            started = time.monotonic()
+            frame_times: list[float] = []
+            try:
+                while time.monotonic() - started < seconds:
+                    pcm = await microphone.frame()
+                    sent = time.monotonic()
+                    await bridge.command("audio", pcm)
+                    frame_times.append(sent)
+            finally:
+                # Match the card's delayed native playback drain before stop.
+                await asyncio.sleep(2.0)
+                await bridge.command("stop")
+            intervals = [right - left for left, right in zip(frame_times, frame_times[1:])]
+            cadence = statistics.mean(intervals) * 1000 if intervals else 0.0
+            duration = (frame_times[-1] - frame_times[0]) if len(frame_times) > 1 else 0.0
+            reports.append((len(frame_times), cadence, duration))
+            print(
+                f"native-ptt run {run}: frames={len(frame_times)} "
+                f"cadence={cadence:.1f} ms send-duration={duration:.2f} s"
+            )
+        if reports:
+            print(
+                "native-ptt: "
+                f"frames-mean={statistics.mean(item[0] for item in reports):.1f} "
+                f"cadence-mean={statistics.mean(item[1] for item in reports):.1f} ms"
+            )
+    finally:
+        await bridge.close()
+        microphone.close()
 
 
 def _post_go2rtc_tone(
@@ -278,6 +497,9 @@ async def benchmark(args: argparse.Namespace) -> int:
     capture_url = f"rtsp://{user}:{secret}@{CAMERA_HOST}:{CAMERA_PORT}/{path}"
     native_session: NativeTalkSession | None = None
     try:
+        if args.native_ptt_runs:
+            await _run_native_ptt(args.native_ptt_runs, args.ptt_seconds)
+
         if args.capture_runs:
             await _run_rtsp_capture_case(
                 args.capture_runs, capture_url, OBSERVE_SECONDS, args.play
@@ -404,6 +626,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-runs", type=int, default=0)
     parser.add_argument(
+        "--native-ptt-runs", type=int, default=0,
+        help="emulate card PTT through Home Assistant WebSocket and local microphone",
+    )
+    parser.add_argument(
+        "--ptt-seconds", type=float, default=PTT_SECONDS,
+        help="microphone capture duration per native PTT run",
+    )
+    parser.add_argument(
         "--capture-runs", type=int, default=0,
         help="direct RTSP capture-only runs; validates camera audio reception",
     )
@@ -420,7 +650,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     if any(value < 0 for value in (
-        args.native_runs, args.capture_runs,
+        args.native_runs, args.native_ptt_runs, args.capture_runs,
         args.direct_rtsp_runs,
         args.go2rtc_runs,
     )):
