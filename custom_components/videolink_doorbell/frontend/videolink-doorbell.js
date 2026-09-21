@@ -1049,7 +1049,6 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Outbound audio: ${value(this._diagnostics.outboundPackets)} packets, ${value(this._diagnostics.outboundBytes)} bytes`,
       `Inbound codec: ${codec(this._diagnostics.codec, this._diagnostics.codecClockRate, this._diagnostics.codecChannels)}`,
       `Outbound codec/backchannel: ${codec(this._diagnostics.outboundCodec, this._diagnostics.outboundCodecClockRate, this._diagnostics.outboundCodecChannels)}`,
-      "Camera/RTSP speaker delay: not exposed by WebRTC stats",
       `Mic permission: ${ms(this._diagnostics.micPermissionMs)}`,
       `PTT to track attached: ${ms(this._diagnostics.trackAttachMs)}`,
       `Track assignment: ${ms(this._diagnostics.trackAttachMs == null || this._diagnostics.micPermissionMs == null
