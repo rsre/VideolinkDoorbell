@@ -351,6 +351,10 @@ class VideolinkClient:
             await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
             await self._native_talk.send_pcm(pcm)
             deadline += frame_size / config.sample_rate
+        # Native playback is buffered in the camera. Keep the session alive
+        # after the final frame so the caller cannot stop it before the queued
+        # audio has reached the speaker.
+        await asyncio.sleep(2.0)
         # The final TCP write can complete before the doorbell has played its
         # queued audio. Match the CLI probe's drain before the card stops talk.
         await asyncio.sleep(1.0)
