@@ -411,7 +411,8 @@ class VideolinkDoorbellCard extends HTMLElement {
           if (this._config.talk_mode === "native" && !this._controlsHidden) {
             this._ensureNativeTalkSession().catch((error) => {
               this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
-              this._setStatus(`Native talk unavailable: ${this._diagnostics.nativeTalkError}`);
+              console.error("[Videolink] Native talk unavailable", error);
+              this._setStatus("Native talk is unavailable. Try again.");
             });
           }
         }
@@ -699,7 +700,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._setStatus("Test tone sent");
     } catch (error) {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
-      this._setStatus(`Test tone failed: ${this._diagnostics.nativeTalkError}`);
+      console.error("[Videolink] Test tone failed", error);
+      this._setStatus("Test tone failed. Try again.");
     } finally {
       this._toneTesting = false;
       this._updateToneButton();

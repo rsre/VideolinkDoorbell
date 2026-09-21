@@ -316,11 +316,14 @@ class VideolinkClient:
                     await self._native_talk.stop()
                     self._native_talk = None
                     raise
+            elif self._native_talk.failed:
+                await self._native_talk.restart()
 
     async def native_talk_audio(self, pcm16le: bytes) -> None:
         """Encode and send exactly one 1024-sample PCM talk frame."""
-        if self._native_talk is None or not self._native_talk.active:
+        if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
+        await self.native_talk_start(self._native_talk.channel)
         try:
             await self._native_talk.send_pcm(pcm16le)
         except RuntimeError as err:
@@ -366,5 +369,8 @@ class VideolinkClient:
         """Stop and close the experimental native talk path."""
         async with self._native_talk_lock:
             if self._native_talk is not None:
-                await self._native_talk.stop()
-                self._native_talk = None
+                session = self._native_talk
+                try:
+                    await session.stop()
+                finally:
+                    self._native_talk = None

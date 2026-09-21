@@ -956,6 +956,11 @@ class NativeTalkChannel:
         """Whether the negotiated talk session is ready to send audio."""
         return self.transport is not None and self._audio_queue is not None
 
+    @property
+    def failed(self) -> bool:
+        """Whether the session's sender has lost its native TCP connection."""
+        return self._audio_error is not None
+
     async def start(self) -> None:
         """Authenticate, negotiate TalkAbility, and open the talk channel."""
         async with self._lifecycle_lock:
@@ -1014,12 +1019,29 @@ class NativeTalkChannel:
         if not self.active or self._audio_queue is None:
             raise RuntimeError("native talk session is not active")
         if self._audio_error is not None:
-            raise RuntimeError(
-                f"native talk audio worker failed: {self._audio_error}"
-            ) from self._audio_error
+            previous_error = self._audio_error
+            try:
+                await self.restart()
+            except Exception as error:
+                raise RuntimeError(
+                    f"native talk audio worker failed: {previous_error}"
+                ) from error
+            if self._audio_queue is None:
+                raise RuntimeError("native talk session is not active after restart")
         completion = asyncio.get_running_loop().create_future()
         await self._audio_queue.put((pcm16le, completion))
         await completion
+
+    async def restart(self) -> None:
+        """Replace a failed native connection with a freshly negotiated session."""
+        if self.active:
+            try:
+                await self.stop()
+            except Exception:
+                # A broken socket may reject the reset command; close and
+                # discard it anyway before opening the replacement session.
+                pass
+        await self.start()
 
     def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:
         """Set the callback for cleaned camera mix frames."""
