@@ -1,6 +1,11 @@
 # Videolink Doorbell for Home Assistant
 
-A local custom integration that uses the token-based CGI API and the native authenticated FLV live stream. A secondary RTSP producer supplies the go2rtc audio backchannel for supported cameras.
+A local custom integration that uses the token-based CGI API and the native authenticated FLV live stream.
+
+There's two options for 2 way audio:
+
+- a secondary RTSP producer supplies the go2rtc audio backchannel for supported cameras.
+- an implementation of the custom Reolink protocol.
 
 ## Install with HACS
 
@@ -26,13 +31,7 @@ Connection, credential, channel, stream, and certificate settings can be updated
 from the integration's **Reconfigure** action. Authentication failures prompt for
 replacement credentials without requiring the integration to be removed.
 
-## Two-way audio
-
-Home Assistant's built-in go2rtc integration combines the FLV video producer with an RTSP audio-backchannel producer. Open the camera through a WebRTC-capable card and grant the browser microphone permission. Two-way audio depends on the camera firmware exposing a compatible RTSP/ONVIF backchannel; unsupported models continue to provide video and camera-to-browser audio normally.
-
-The stream starts muted; using push-to-talk keeps inbound sound muted while transmitting to avoid feedback, then enables it on release so the reply can be heard.
-
-## Cards
+## Card
 
 The integration bundles and automatically registers the **Videolink Doorbell** dashboard card. Add it through the dashboard card picker, or use YAML:
 
@@ -41,34 +40,26 @@ type: custom:videolink-doorbell
 entity: camera.your_videolink_camera
 ```
 
-Hold **Hold to talk** while speaking and release it to stop. The card requests microphone access only when the control is pressed and releases the microphone immediately afterward. Home Assistant must be used over HTTPS (or localhost) because browsers block microphone capture on insecure origins.
-
-For an audio-only intercom, set `hide_video: true` on the camera card:
-
-```yaml
-type: custom:videolink-doorbell
-entity: camera.your_videolink_camera
-hide_video: true
-```
-
-Audio-only mode negotiates only camera audio and the push-to-talk backchannel.
+Home Assistant must be used over HTTPS (or localhost) because browsers block microphone capture on insecure origins.
 
 ### Settings
 
 - `title` to set a custom title on the card.
-- `video_fit` controls the video layout: `cover` crops it, `contain` scales the
-  entire frame with letterboxing, `fill` stretches it, and `full` sizes the card
-  to the stream's native aspect ratio. The default is `contain`.
-- `enable_popup` to enable Home Assistant's native camera dialog when clicking the video. It defaults to false.
 - `hide_title` for a titleless card.
 - `card_style` selects the card layout (defaults to `audio_video`):
   - `audio_video` shows both video and audio controls.
   - `video` shows video only.
   - `audio` shows the audio-only intercom with controls.
-- `debug` to show debug information and metrics like live WebRTC transport and PTT timing diagnostics.
 - `talk_mode` selects the talkback path (defaults to `rtsp`):
   - `rtsp` uses the WebRTC/RTSP backchannel.
   - `native` uses the experimental native Baichuan protocol.
+- `video_fit` controls the video layout (default is `contain`):
+  - `contain` scales the entire frame with letterboxing,
+  - `cover` crops it,
+  - `fill` stretches it,
+  - `full` sizes the card to the stream's native aspect ratio.
+- `enable_popup` to enable Home Assistant's native camera dialog when clicking the video.
+- `debug` to show debug information and metrics like live WebRTC transport and PTT timing diagnostics.
 
 ## Versions
 
@@ -98,8 +89,8 @@ the time from the first native tone frame to that observation.
 
 The benchmark separates the native and direct RTSP send/listen paths:
 
-* `native`: Baichuan native send, direct camera RTSP listen.
-* `direct-rtsp`: direct camera RTSP backchannel send, direct camera RTSP listen.
+- `native`: Baichuan native send, direct camera RTSP listen.
+- `direct-rtsp`: direct camera RTSP backchannel send, direct camera RTSP listen.
 
 To validate direct RTSP audio reception without sending, run capture-only tests:
 
