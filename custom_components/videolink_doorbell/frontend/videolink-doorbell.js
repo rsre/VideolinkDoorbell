@@ -734,18 +734,22 @@ class VideolinkDoorbellCard extends HTMLElement {
         }
         const encoded = btoa(binary);
         this._diagnostics.nativeQueueWaitMs = performance.now() - capturedAt;
-        const sentAt = performance.now();
-        const request = this._hass.callWS({
+        // Keep microphone frames ordered. The native DVI-4 encoder is
+        // stateful, and concurrent WebSocket commands can arrive out of order
+        // when browser/network latency varies.
+        const request = this._nativeSendChain.then(async () => {
+          const sentAt = performance.now();
+          await this._hass.callWS({
             type: "videolink_doorbell/native_talk",
             action: "audio",
             entity_id: this._config.entity,
             pcm: encoded,
-          }).then(() => {
-            this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
-          })
-          .catch((error) => {
-            this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
           });
+          this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
+        }).catch((error) => {
+          this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+        });
+        this._nativeSendChain = request;
         this._nativePendingSends.add(request);
         request.then(
           () => this._nativePendingSends.delete(request),
