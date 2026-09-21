@@ -83,6 +83,9 @@ class VideolinkClient:
         self._login_lock = asyncio.Lock()
         self._native_talk: NativeTalkSession | None = None
         self._native_talk_config: TalkConfig | None = None
+        self._native_audio_queue: asyncio.Queue[bytes] | None = None
+        self._native_audio_worker: asyncio.Task[None] | None = None
+        self._native_audio_error: Exception | None = None
         self._native_talk_lock = asyncio.Lock()
 
     @staticmethod
@@ -317,17 +320,42 @@ class VideolinkClient:
                     ability = await self._native_talk.talk_ability()
                     self._native_talk_config = ability.to_config(channel)
                     await self._native_talk.open_talk(self._native_talk_config)
+                    self._native_audio_queue = asyncio.Queue()
+                    self._native_audio_error = None
+                    self._native_audio_worker = asyncio.create_task(
+                        self._native_audio_worker_loop()
+                    )
                 except Exception:
                     await self._native_talk.close()
                     self._native_talk = None
                     self._native_talk_config = None
+                    self._native_audio_queue = None
                     raise
+
+    async def _native_audio_worker_loop(self) -> None:
+        """Send queued microphone frames in capture order."""
+        while True:
+            if self._native_audio_queue is None:
+                return
+            pcm16le = await self._native_audio_queue.get()
+            try:
+                if self._native_talk is not None:
+                    try:
+                        await self._native_talk.send_pcm(pcm16le)
+                    except Exception as err:
+                        self._native_audio_error = err
+            finally:
+                self._native_audio_queue.task_done()
 
     async def native_talk_audio(self, pcm16le: bytes) -> None:
         """Encode and send exactly one 1024-sample PCM talk frame."""
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
-        await self._native_talk.send_pcm(pcm16le)
+        if self._native_audio_queue is None:
+            raise VideolinkConnectionError("Native talk audio queue is not active")
+        if self._native_audio_error is not None:
+            raise VideolinkConnectionError("Native talk audio worker failed") from self._native_audio_error
+        await self._native_audio_queue.put(pcm16le)
 
     async def native_talk_tone(self, channel: int, *, seconds: float = 2.0) -> None:
         """Generate and send a test tone without browser audio/WebSocket frames."""
@@ -370,8 +398,16 @@ class VideolinkClient:
         async with self._native_talk_lock:
             if self._native_talk is not None:
                 try:
+                    if self._native_audio_queue is not None:
+                        await self._native_audio_queue.join()
                     await self._native_talk.stop_talk()
                 finally:
+                    if self._native_audio_worker is not None:
+                        self._native_audio_worker.cancel()
+                        await asyncio.gather(self._native_audio_worker, return_exceptions=True)
+                        self._native_audio_worker = None
+                    self._native_audio_queue = None
+                    self._native_audio_error = None
                     await self._native_talk.close()
                     self._native_talk = None
                     self._native_talk_config = None
