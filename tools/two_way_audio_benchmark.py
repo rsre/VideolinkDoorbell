@@ -97,6 +97,7 @@ def wait_for_audio_producer(timeout: float = 10.0) -> float:
     raise RuntimeError("go2rtc audio producer did not become active")
 
 from native_talk import NativeTalkSession  # noqa: E402
+from api import VideolinkClient  # noqa: E402
 from native_talk_rtsp_probe import (  # noqa: E402
     RtspAudioCapture,
     TONE_FREQUENCY,
@@ -405,8 +406,9 @@ async def _run_case(
     play: bool,
     before_run=None,
     after_run=None,
+    listener_kind: str = "rtsp",
 ) -> list[float]:
-    capture = RtspAudioCapture(capture_url, play=play)
+    capture = RtspAudioCapture(capture_url, play=play, source_kind=listener_kind)
     stop = asyncio.Event()
     await capture.start()
     capture_task = asyncio.create_task(capture.run(stop))
@@ -441,12 +443,12 @@ async def _run_case(
 
 
 async def _run_rtsp_capture_case(
-    runs: int, capture_url: str, observe: float, play: bool
+    runs: int, capture_url: str, observe: float, play: bool, listener_kind: str
 ) -> None:
     """Verify direct camera RTSP audio without exercising a send path."""
     received = 0
     for run in range(1, runs + 1):
-        capture = RtspAudioCapture(capture_url, play=play)
+        capture = RtspAudioCapture(capture_url, play=play, source_kind=listener_kind)
         stop = asyncio.Event()
         await capture.start()
         task = asyncio.create_task(capture.run(stop))
@@ -475,6 +477,24 @@ async def _run_send_only_case(runs: int, observe: float, send_tone, cleanup) -> 
         await cleanup()
 
 
+async def _flv_url() -> str:
+    """Build an authenticated camera FLV preview URL for audio observation."""
+    try:
+        from aiohttp import ClientSession
+    except ImportError as err:
+        raise RuntimeError("aiohttp is required for FLV listening") from err
+    async with ClientSession() as session:
+        client = VideolinkClient(
+            session,
+            CAMERA_HOST,
+            CAMERA_USERNAME,
+            CAMERA_PASSWORD,
+            port=443,
+            verify_ssl=False,
+        )
+        return await client.flv_url(CAMERA_CHANNEL, CAMERA_STREAM)
+
+
 async def _run_copied_test(runs: int) -> None:
     for run in range(1, runs + 1):
         test_audio()
@@ -495,6 +515,7 @@ async def benchmark(args: argparse.Namespace) -> int:
     secret = urllib.parse.quote(password, safe="")
     path = f"h264Preview_{CAMERA_CHANNEL + 1:02d}_{CAMERA_STREAM}"
     capture_url = f"rtsp://{user}:{secret}@{CAMERA_HOST}:{CAMERA_PORT}/{path}"
+    listener_url = await _flv_url() if args.listener == "flv" else capture_url
     native_session: NativeTalkSession | None = None
     try:
         if args.native_ptt_runs:
@@ -502,7 +523,8 @@ async def benchmark(args: argparse.Namespace) -> int:
 
         if args.capture_runs:
             await _run_rtsp_capture_case(
-                args.capture_runs, capture_url, OBSERVE_SECONDS, args.play
+                args.capture_runs, listener_url, OBSERVE_SECONDS, args.play,
+                args.listener,
             )
 
         if args.native_runs:
@@ -531,8 +553,8 @@ async def benchmark(args: argparse.Namespace) -> int:
                 return sent
 
             native_results = await _run_case(
-                "native", args.native_runs, capture_url, OBSERVE_SECONDS,
-                send_native, args.play,
+                "native", args.native_runs, listener_url, OBSERVE_SECONDS,
+                send_native, args.play, listener_kind=args.listener,
             )
             await native_session.stop_talk()
             _print_summary("native", native_results)
@@ -574,8 +596,9 @@ async def benchmark(args: argparse.Namespace) -> int:
 
             try:
                 direct_results = await _run_case(
-                    "direct-rtsp", args.direct_rtsp_runs, capture_url,
+                    "direct-rtsp", args.direct_rtsp_runs, listener_url,
                     OBSERVE_SECONDS, send_direct_rtsp, args.play,
+                    listener_kind=args.listener,
                 )
             finally:
                 await close_direct_rtsp()
@@ -595,8 +618,9 @@ async def benchmark(args: argparse.Namespace) -> int:
             else:
                 go2rtc_results = await _run_case(
                     "go2rtc", args.go2rtc_runs,
-                    capture_url,
+                    listener_url,
                     OBSERVE_SECONDS, send_go2rtc, args.play,
+                    listener_kind=args.listener,
                     after_run=reset_go2rtc,
                 )
                 _print_summary("go2rtc", go2rtc_results)
@@ -643,6 +667,10 @@ def main() -> int:
     )
     parser.add_argument("--rtsp-runs", dest="direct_rtsp_runs", type=int, default=0)
     parser.add_argument("--play", action="store_true")
+    parser.add_argument(
+        "--listener", choices=("rtsp", "flv"), default="rtsp",
+        help="audio observation source (default: rtsp)",
+    )
     parser.add_argument("--go2rtc-runs", type=int, default=0)
     parser.add_argument(
         "--no-listener", action="store_true",
