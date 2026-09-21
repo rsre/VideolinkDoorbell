@@ -691,7 +691,12 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   async _stopMicrophone() {
-    const restoreMuted = this._mutedBeforeTalk;
+    // Native talk keeps inbound audio audible after PTT is released so the
+    // user can hear the camera's response. WebRTC/RTSP talk still restores
+    // the previous mute state.
+    const restoreMuted = this._config?.talk_mode === "native"
+      ? undefined
+      : this._mutedBeforeTalk;
     this._talkRequested = false;
     if (this._microphoneGain && this._keepaliveContext) {
       this._microphoneGain.gain.setValueAtTime(0, this._keepaliveContext.currentTime);
