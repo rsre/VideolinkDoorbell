@@ -44,8 +44,8 @@ Home Assistant must be used over HTTPS (or localhost) because browsers block mic
 
 ### Settings
 
-- `title` to set a custom title on the card.
-- `hide_title` for a titleless card.
+- `title` to set a custom title on the card. If omitted, the camera entity name
+  is used; leave it blank to hide the title.
 - `card_style` selects the card layout (defaults to `audio_video`):
   - `audio_video` shows both video and audio controls.
   - `video` shows video only.

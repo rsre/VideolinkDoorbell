@@ -21,6 +21,14 @@ test("new cards default to scaled video", () => {
   assert.equal(CardUnderTest.getStubConfig(undefined, ["camera.front_door"]).video_fit, "contain");
 });
 
+test("new cards prefill the title from the camera entity", () => {
+  const config = CardUnderTest.getStubConfig(
+    { states: { "camera.front_door": { attributes: { friendly_name: "Front Door" } } } },
+    ["camera.front_door"],
+  );
+  assert.equal(config.title, "Front Door");
+});
+
 test("the editor exposes the supported video modes", () => {
   const field = CardUnderTest.getConfigForm().schema.find(({ name }) => name === "video_fit");
   assert.equal(field.selector.select.mode, "dropdown");
@@ -44,4 +52,13 @@ test("video-only card style hides controls", () => {
   card.setConfig({ entity: "camera.front_door", card_style: "video" });
   assert.equal(card._audioOnly, false);
   assert.equal(card._controlsHidden, true);
+});
+
+test("blank title hides the header while omitted title remains visible", () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door" });
+  assert.equal(card._titleVisible, true);
+  card.setConfig({ entity: "camera.front_door", title: "" });
+  assert.equal(card._titleVisible, false);
 });

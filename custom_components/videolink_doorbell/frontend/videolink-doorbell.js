@@ -55,7 +55,10 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   static getStubConfig(hass, entities) {
     const entity = entities?.find((candidate) => candidate.startsWith("camera."));
-    return { entity: entity || "", video_fit: "contain" };
+    const title = entity
+      ? hass?.states?.[entity]?.attributes?.friendly_name || entity
+      : "";
+    return { entity: entity || "", title, video_fit: "contain" };
   }
 
   static getConfigForm() {
@@ -69,7 +72,6 @@ class VideolinkDoorbellCard extends HTMLElement {
           { value: "fill", label: "Stretched" },
           { value: "full", label: "Full" },
         ] } } },
-        { name: "hide_title", selector: { boolean: {} } },
         { name: "card_style", selector: { select: { mode: "dropdown", options: [
           { value: "video", label: "Video only" },
           { value: "audio", label: "Audio only" },
@@ -86,7 +88,6 @@ class VideolinkDoorbellCard extends HTMLElement {
         entity: "Camera entity",
         title: "Title",
         video_fit: "Video fit",
-        hide_title: "Hide card title",
         card_style: "Card style",
         enable_popup: "Enable video popup",
         talk_mode: "Talk mode",
@@ -114,7 +115,6 @@ class VideolinkDoorbellCard extends HTMLElement {
       : "rtsp";
     const nativeTalkDisabled = previous?.talk_mode === "native" && talkMode !== "native";
     this._config = {
-      hide_title: false,
       card_style: cardStyle,
       enable_popup: false,
       talk_mode: talkMode,
@@ -152,6 +152,11 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   get _audioOnly() {
     return this._config?.card_style === "audio";
+  }
+
+  get _titleVisible() {
+    const title = this._config?.title;
+    return title == null || String(title).trim() !== "";
   }
 
   get _controlsHidden() {
@@ -233,7 +238,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         .copy-diagnostics { min-width: 0; height: 32px; padding: 0 12px; font-size: 12px; }
       </style>
       <ha-card class="${audioOnly ? "audio-only" : ""}">
-        ${this._config.hide_title ? "" : '<div class="header"></div>'}
+        ${this._titleVisible ? '<div class="header"></div>' : ""}
         ${audioOnly ? `<audio autoplay playsinline muted></audio>
         <div class="status">Connecting…</div>` : `<div class="stage ${this._config.enable_popup ? "popup-enabled" : ""} ${this._config.video_fit === "full" ? "fit-full" : ""}"
           ${this._config.enable_popup ? 'role="button" tabindex="0" aria-label="Open camera stream"' : ""}>
@@ -304,7 +309,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     const header = this.shadowRoot?.querySelector(".header");
     if (!header || !this._config) return;
     const state = this._hass?.states?.[this._config.entity];
-    header.textContent = this._config.title || state?.attributes?.friendly_name || this._config.entity;
+    header.textContent = this._config.title == null
+      ? state?.attributes?.friendly_name || this._config.entity
+      : this._config.title;
   }
 
   _setStatus(message) {
