@@ -129,11 +129,11 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._stopMicrophone();
     }
     if (nativeTalkDisabled || (controlsHidden && this._config.talk_mode === "native")) {
-      this._stopNativeTalkSession();
+      this._runLifecycle("stop native talk", () => this._stopNativeTalkSession());
     }
     this._render();
     if (mediaChanged && this.isConnected) {
-      this._restart();
+      this._runLifecycle("restart stream", () => this._restart());
     }
   }
 
@@ -141,7 +141,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     const firstUpdate = !this._hass;
     this._hass = hass;
     if (firstUpdate && this.isConnected) {
-      this._start();
+      this._runLifecycle("start stream", () => this._start());
     }
     this._updateTitle();
   }
@@ -171,7 +171,7 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   connectedCallback() {
     this._render();
-    this._start();
+    this._runLifecycle("start stream", () => this._start());
     document.addEventListener("visibilitychange", this._visibilityHandler);
     window.addEventListener("blur", this._windowBlurHandler);
   }
@@ -179,19 +179,19 @@ class VideolinkDoorbellCard extends HTMLElement {
   disconnectedCallback() {
     document.removeEventListener("visibilitychange", this._visibilityHandler);
     window.removeEventListener("blur", this._windowBlurHandler);
-    this._cleanup();
+    this._runLifecycle("clean up stream", () => this._cleanup());
   }
 
   _visibilityHandler = () => {
     if (document.hidden) {
-      this._cleanup();
+      this._runLifecycle("clean up hidden stream", () => this._cleanup());
     } else {
-      this._start();
+      this._runLifecycle("restart visible stream", () => this._start());
     }
   };
 
   _windowBlurHandler = () => {
-    this._endTalk();
+    this._runLifecycle("stop talk on window blur", () => this._endTalk());
   };
 
   _render() {
@@ -264,17 +264,21 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnosticsOutput = this.shadowRoot.querySelector(".diagnostics pre");
     this._copyDiagnosticsButton = this.shadowRoot.querySelector(".copy-diagnostics");
 
-    this._talkButton?.addEventListener("pointerdown", this._beginTalk);
-    this._talkButton?.addEventListener("pointerup", this._endTalk);
-    this._talkButton?.addEventListener("pointercancel", this._endTalk);
-    this._talkButton?.addEventListener("pointerleave", this._endTalk);
-    this._talkButton?.addEventListener("lostpointercapture", this._endTalk);
-    this._talkButton?.addEventListener("blur", this._endTalk);
+    this._talkButton?.addEventListener("pointerdown", this._safeBeginTalk);
+    this._talkButton?.addEventListener("pointerup", this._safeEndTalk);
+    this._talkButton?.addEventListener("pointercancel", this._safeEndTalk);
+    this._talkButton?.addEventListener("pointerleave", this._safeEndTalk);
+    this._talkButton?.addEventListener("lostpointercapture", this._safeEndTalk);
+    this._talkButton?.addEventListener("blur", this._safeEndTalk);
     this._talkButton?.addEventListener("keydown", this._talkKeyDown);
     this._talkButton?.addEventListener("keyup", this._talkKeyUp);
     this._soundButton?.addEventListener("click", this._toggleSound);
-    this._toneButton?.addEventListener("click", this._sendTestTone);
-    this._copyDiagnosticsButton?.addEventListener("click", this._copyDiagnostics);
+    this._toneButton?.addEventListener("click", (event) => {
+      this._runLifecycle("send test tone", () => this._sendTestTone(event));
+    });
+    this._copyDiagnosticsButton?.addEventListener("click", () => {
+      this._runLifecycle("copy diagnostics", () => this._copyDiagnostics());
+    });
     const stage = this.shadowRoot.querySelector(".stage");
     if (stage && this._config.enable_popup) {
       stage.addEventListener("click", this._openMoreInfo);
@@ -333,6 +337,18 @@ class VideolinkDoorbellCard extends HTMLElement {
     await this._start();
   }
 
+  _runLifecycle(operation, callback) {
+    return Promise.resolve()
+      .then(callback)
+      .catch((error) => {
+        const message = error?.message || String(error);
+        this._diagnostics = { ...this._diagnostics, lifecycleError: `${operation}: ${message}` };
+        console.error(`[Videolink] ${operation} failed`, error);
+        this._updateDiagnosticsView();
+        if (this._config?.debug) this._setStatus(`${operation} failed: ${message}`);
+      });
+  }
+
   _isCurrentConnection(generation) {
     return generation === this._connectionGeneration && this.isConnected && !document.hidden;
   }
@@ -343,7 +359,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._reconnectAttempt += 1;
     this._reconnectTimer = window.setTimeout(() => {
       this._reconnectTimer = undefined;
-      this._restart();
+      this._runLifecycle("reconnect stream", () => this._restart());
     }, delay);
   }
 
@@ -657,6 +673,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     await this._stopMicrophone();
   };
 
+  _safeBeginTalk = (event) => {
+    this._runLifecycle("start talk", () => this._beginTalk(event));
+  };
+
+  _safeEndTalk = (event) => {
+    this._runLifecycle("stop talk", () => this._endTalk(event));
+  };
+
   _sendTestTone = async (event) => {
     event?.preventDefault();
     if (
@@ -683,11 +707,11 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   _talkKeyDown = (event) => {
-    if ((event.key === " " || event.key === "Enter") && !event.repeat) this._beginTalk(event);
+    if ((event.key === " " || event.key === "Enter") && !event.repeat) this._safeBeginTalk(event);
   };
 
   _talkKeyUp = (event) => {
-    if (event.key === " " || event.key === "Enter") this._endTalk(event);
+    if (event.key === " " || event.key === "Enter") this._safeEndTalk(event);
   };
 
   async _stopMicrophone() {
@@ -778,7 +802,7 @@ class VideolinkDoorbellCard extends HTMLElement {
             entity_id: this._config.entity,
             pcm: encoded,
           });
-          this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
+      this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
         }).catch((error) => {
           this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
         });
@@ -1059,6 +1083,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Native queue wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
       `Native WebSocket ack: ${ms(this._diagnostics.nativeWsAckMs)}`,
       this._diagnostics.microphoneError ? `Microphone error: ${this._diagnostics.microphoneError}` : "",
+      this._diagnostics.lifecycleError ? `Lifecycle error: ${this._diagnostics.lifecycleError}` : "",
       this._diagnostics.statsError ? `Stats error: ${this._diagnostics.statsError}` : "",
     ].filter(Boolean).join("\n");
   }
