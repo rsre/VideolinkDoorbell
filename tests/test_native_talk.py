@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 import sys
@@ -168,3 +169,48 @@ def test_parser_rejects_control_or_truncated_data() -> None:
     frame = native_talk.NativeTalkFrame(b"payload").encode()
     with pytest.raises(ValueError, match="length mismatch"):
         native_talk.split_native_talk_frame(frame[:-1])
+
+
+@pytest.mark.asyncio
+async def test_native_talk_channel_owns_session_lifecycle(monkeypatch) -> None:
+    class FakeTransport:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.mix_frame_callback = kwargs.get("mix_frame_callback")
+            self.closed = False
+            self.sent = []
+            self.config = native_talk.TalkAbility().to_config(kwargs["channel"])
+            self.__class__.instances.append(self)
+
+        async def login(self):
+            return None
+
+        async def talk_ability(self):
+            return native_talk.TalkAbility()
+
+        async def open_talk(self, config):
+            self.config = config
+
+        async def send_pcm(self, pcm):
+            self.sent.append(pcm)
+
+        async def stop_talk(self):
+            return None
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", FakeTransport)
+    channel = native_talk.NativeTalkChannel("camera", "user", "secret", channel=0)
+
+    await channel.start()
+    assert channel.active is True
+    assert channel.talk_config.sample_rate == 16_000
+    await channel.send_pcm(b"frame")
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert FakeTransport.instances[0].sent == [b"frame"]
+    assert FakeTransport.instances[0].closed is True
+    assert channel.active is False

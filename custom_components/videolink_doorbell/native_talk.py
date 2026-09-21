@@ -925,3 +925,109 @@ class NativeTalkSession:
         header, _, _ = await self._receive_response()
         if header.response_code not in (200, 421, 422):
             raise PermissionError(f"camera rejected talk stop: {header.response_code}")
+
+
+class NativeTalkChannel:
+    """High-level native-talk session with negotiated audio and lifecycle state."""
+
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        channel: int = 0,
+        mix_frame_callback: Callable[[NativeMixFrame], None] | None = None,
+    ) -> None:
+        self.host = host
+        self.username = username
+        self.password = password
+        self.channel = channel
+        self.mix_frame_callback = mix_frame_callback
+        self.transport: NativeTalkSession | None = None
+        self.talk_config: TalkConfig | None = None
+        self._audio_queue: asyncio.Queue[bytes] | None = None
+        self._audio_worker: asyncio.Task[None] | None = None
+        self._audio_error: Exception | None = None
+        self._lifecycle_lock = asyncio.Lock()
+
+    @property
+    def active(self) -> bool:
+        """Whether the negotiated talk session is ready to send audio."""
+        return self.transport is not None and self._audio_queue is not None
+
+    async def start(self) -> None:
+        """Authenticate, negotiate TalkAbility, and open the talk channel."""
+        async with self._lifecycle_lock:
+            if self.active:
+                return
+            transport = NativeTalkSession(
+                self.host,
+                self.username,
+                self.password,
+                channel=self.channel,
+                mix_frame_callback=self.mix_frame_callback,
+            )
+            try:
+                await transport.login()
+                ability = await transport.talk_ability()
+                config = ability.to_config(self.channel)
+                await transport.open_talk(config)
+                self.transport = transport
+                self.talk_config = config
+                self._audio_queue = asyncio.Queue()
+                self._audio_error = None
+                self._audio_worker = asyncio.create_task(self._audio_worker_loop())
+            except Exception:
+                await transport.close()
+                raise
+
+    async def _audio_worker_loop(self) -> None:
+        """Send queued microphone frames in capture order."""
+        while True:
+            if self._audio_queue is None:
+                return
+            pcm16le = await self._audio_queue.get()
+            try:
+                if self.transport is not None:
+                    try:
+                        await self.transport.send_pcm(pcm16le)
+                    except Exception as err:
+                        self._audio_error = err
+            finally:
+                self._audio_queue.task_done()
+
+    async def send_pcm(self, pcm16le: bytes) -> None:
+        """Queue one negotiated PCM frame for ordered transmission."""
+        if not self.active or self._audio_queue is None:
+            raise RuntimeError("native talk session is not active")
+        if self._audio_error is not None:
+            raise RuntimeError("native talk audio worker failed") from self._audio_error
+        await self._audio_queue.put(pcm16le)
+
+    def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:
+        """Set the callback for cleaned camera mix frames."""
+        self.mix_frame_callback = callback
+        if self.transport is not None:
+            self.transport.mix_frame_callback = callback
+
+    async def stop(self) -> None:
+        """Drain audio, reset the camera talk state, and close the connection."""
+        async with self._lifecycle_lock:
+            transport = self.transport
+            if transport is None:
+                return
+            try:
+                if self._audio_queue is not None:
+                    await self._audio_queue.join()
+                await transport.stop_talk()
+            finally:
+                if self._audio_worker is not None:
+                    self._audio_worker.cancel()
+                    await asyncio.gather(self._audio_worker, return_exceptions=True)
+                await transport.close()
+                self._audio_worker = None
+                self._audio_queue = None
+                self._audio_error = None
+                self.transport = None
+                self.talk_config = None
