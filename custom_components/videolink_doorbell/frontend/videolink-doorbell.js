@@ -73,7 +73,10 @@ class VideolinkDoorbellCard extends HTMLElement {
         { name: "hide_video", selector: { boolean: {} } },
         { name: "hide_controls", selector: { boolean: {} } },
         { name: "enable_popup", selector: { boolean: {} } },
-        { name: "native_talk", selector: { boolean: {} } },
+        { name: "talk_mode", selector: { select: { mode: "dropdown", options: [
+          { value: "rtsp", label: "RTSP" },
+          { value: "native", label: "Native" },
+        ] } } },
         { name: "debug", selector: { boolean: {} } },
       ],
       computeLabel: (schema) => ({
@@ -84,7 +87,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         hide_video: "Hide video stream",
         hide_controls: "Hide PTT and mute buttons",
         enable_popup: "Enable video popup",
-        native_talk: "Experimental native Baichuan talk",
+        talk_mode: "Talk mode",
         debug: "Show stream diagnostics",
       })[schema.name],
     };
@@ -101,20 +104,27 @@ class VideolinkDoorbellCard extends HTMLElement {
     const videoFit = ["cover", "contain", "fill", "full"].includes(config.video_fit)
       ? config.video_fit
       : "contain";
+    const talkMode = ["rtsp", "native"].includes(config.talk_mode)
+      ? config.talk_mode
+      : "rtsp";
+    const nativeTalkDisabled = previous?.talk_mode === "native" && talkMode !== "native";
     this._config = {
       hide_title: false,
       hide_video: false,
       hide_controls: false,
       enable_popup: false,
-      native_talk: false,
+      talk_mode: talkMode,
       debug: false,
       ...config,
       video_fit: videoFit,
+      talk_mode: talkMode,
     };
     if (!previous || changed) this._muted = true;
     if (controlsHidden) {
       this._stopMicrophone();
-      if (this._config.native_talk) this._stopNativeTalkSession();
+    }
+    if (nativeTalkDisabled || (controlsHidden && this._config.talk_mode === "native")) {
+      this._stopNativeTalkSession();
     }
     this._render();
     if (mediaChanged && this.isConnected) {
@@ -225,7 +235,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         ${this._config.hide_controls ? "" : `<div class="controls">
           <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
           <button class="talk" type="button" aria-label="Hold to talk">Hold to talk</button>
-          ${this._config.native_talk ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
+          ${this._config.talk_mode === "native" ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
         ${this._config.debug ? '<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre><button class="copy-diagnostics" type="button">Copy diagnostics</button></details>' : ""}
       </ha-card>`;
@@ -366,7 +376,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           this._diagnostics.connectMs = performance.now() - this._diagnostics.startedAt;
           this._setStatus("");
           this._updateTalkButton();
-          if (this._config.native_talk && !this._config.hide_controls) {
+          if (this._config.talk_mode === "native" && !this._config.hide_controls) {
             this._ensureNativeTalkSession().catch((error) => {
               this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
               this._setStatus(`Native talk unavailable: ${this._diagnostics.nativeTalkError}`);
@@ -555,7 +565,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnostics.trackAttachMs = undefined;
     this._diagnostics.firstOutboundPacketMs = undefined;
     if (event.pointerId != null) this._talkButton.setPointerCapture?.(event.pointerId);
-    if (this._config.native_talk) {
+    if (this._config.talk_mode === "native") {
       // Native talk has its own echo/mix path. Make inbound audio audible as
       // soon as PTT starts, including while microphone setup is in progress.
       this._mutedBeforeTalk = this._muted;
@@ -585,7 +595,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         await this._stopMicrophone();
         return;
       }
-      if (this._config.native_talk) {
+      if (this._config.talk_mode === "native") {
         await this._ensureNativeTalkSession();
         await this._startNativeTalkCapture(this._micStream);
       } else if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
@@ -606,8 +616,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       // Native talk has its own echo cancellation/mix path, so leave inbound
       // audio audible while experimental native PTT is active. Preserve the
       // existing mute-while-transmitting behavior for WebRTC talkback.
-      if (!this._config.native_talk) this._mutedBeforeTalk = this._muted;
-      if (!this._config.native_talk) {
+      if (this._config.talk_mode !== "native") this._mutedBeforeTalk = this._muted;
+      if (this._config.talk_mode !== "native") {
         this._muted = true;
         if (this._video) this._video.muted = true;
       }
@@ -634,7 +644,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   _sendTestTone = async (event) => {
     event?.preventDefault();
     if (
-      !this._config.native_talk || this._toneTesting || this._talking
+      this._config.talk_mode !== "native" || this._toneTesting || this._talking
       || !this._streamReady || !this._hass
     ) return;
     this._toneTesting = true;
@@ -765,7 +775,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _ensureNativeTalkSession() {
-    if (!this._config?.native_talk || this._config.hide_controls || !this._hass) return;
+    if (this._config?.talk_mode !== "native" || this._config.hide_controls || !this._hass) return;
     if (this._nativeSessionReady) return;
     if (this._nativeSessionStarting) return this._nativeSessionStarting;
     this._nativeSessionStarting = (async () => {
