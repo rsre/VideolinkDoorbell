@@ -597,11 +597,14 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.trackAttachMs = this._diagnostics.trackAttachedAt - this._diagnostics.micRequestedAt;
       this._talking = true;
       this._micPending = false;
-      // Keep inbound audio muted while transmitting to prevent feedback. Once
-      // PTT ends, listening is enabled automatically so the reply is audible.
-      this._mutedBeforeTalk = false;
-      this._muted = true;
-      if (this._video) this._video.muted = true;
+      // Native talk has its own echo cancellation/mix path, so leave inbound
+      // audio audible while experimental native PTT is active. Preserve the
+      // existing mute-while-transmitting behavior for WebRTC talkback.
+      this._mutedBeforeTalk = this._muted;
+      if (!this._config.native_talk) {
+        this._muted = true;
+        if (this._video) this._video.muted = true;
+      }
       if (this._soundButton) this._soundButton.disabled = true;
       this._updateTalkButton();
       this._updateSoundButton();
