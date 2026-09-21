@@ -753,6 +753,25 @@ class NativeTalkSession:
             self._trace(
                 f"AudioTalkOpen retry acknowledgement: response={header.response_code}"
             )
+            if header.response_code == 422:
+                # A camera can retain a previous talk owner after a dropped
+                # TCP connection. Recreate the whole native session instead
+                # of retrying the rejected configuration on the same socket.
+                self._trace("AudioTalkOpen still rejected; reconnecting native session")
+                await self.close()
+                await self.login()
+                config = (await self.talk_ability()).to_config(self.channel)
+                await self.client.send(
+                    serialize_talk_config_message(
+                        config,
+                        msg_num=self.client.next_message_number(),
+                        encrypt_xml=self._encrypt_xml,
+                    )
+                )
+                header, _, _ = await self._receive_response()
+                self._trace(
+                    f"AudioTalkOpen reconnect acknowledgement: response={header.response_code}"
+                )
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
         if config.audio_stream_mode == "mixAudioStream":
