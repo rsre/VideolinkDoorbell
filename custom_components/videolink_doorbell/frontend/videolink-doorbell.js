@@ -767,6 +767,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeProcessor?.disconnect();
     this._nativeSource?.disconnect();
     this._nativeGain?.disconnect();
+    // Camera native-talk playback is buffered and can arrive after the last
+    // microphone frame. Keep the mix subscription and playback context alive
+    // while that delayed audio drains; unsubscribing first discards it.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     if (this._nativeMixUnsubscribe) {
       // subscribeMessage() returns an async unsubscribe function. The custom
       // native-talk command is not a HA event subscription, so HA may reject
