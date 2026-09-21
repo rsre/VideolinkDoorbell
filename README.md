@@ -59,7 +59,7 @@ Audio-only mode negotiates only camera audio and the push-to-talk backchannel.
 - `video_fit` controls the video layout: `cover` crops it, `contain` scales the
   entire frame with letterboxing, `fill` stretches it, and `full` sizes the card
   to the stream's native aspect ratio. The default is `contain`.
-- `disable_popup` to disable open Home Assistant's native camera dialog when clicking the video.
+- `enable_popup` to enable Home Assistant's native camera dialog when clicking the video. It defaults to false.
 - `hide_title` for a titleless card.
 - `hide_video` to switch the card to its compact, audio-only intercom mode.
 - `hide_controls` to hide both the mute and push-to-talk buttons.

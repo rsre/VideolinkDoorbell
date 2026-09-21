@@ -72,7 +72,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         { name: "hide_title", selector: { boolean: {} } },
         { name: "hide_video", selector: { boolean: {} } },
         { name: "hide_controls", selector: { boolean: {} } },
-        { name: "disable_popup", selector: { boolean: {} } },
+        { name: "enable_popup", selector: { boolean: {} } },
         { name: "native_talk", selector: { boolean: {} } },
         { name: "debug", selector: { boolean: {} } },
       ],
@@ -83,7 +83,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         hide_title: "Hide card title",
         hide_video: "Hide video stream",
         hide_controls: "Hide PTT and mute buttons",
-        disable_popup: "Disable video popup",
+        enable_popup: "Enable video popup",
         native_talk: "Experimental native Baichuan talk",
         debug: "Show stream diagnostics",
       })[schema.name],
@@ -105,7 +105,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       hide_title: false,
       hide_video: false,
       hide_controls: false,
-      disable_popup: false,
+      enable_popup: false,
       native_talk: false,
       debug: false,
       ...config,
@@ -216,8 +216,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       <ha-card class="${audioOnly ? "audio-only" : ""}">
         ${this._config.hide_title ? "" : '<div class="header"></div>'}
         ${audioOnly ? `<audio autoplay playsinline muted></audio>
-        <div class="status">Connecting…</div>` : `<div class="stage ${this._config.disable_popup ? "" : "popup-enabled"} ${this._config.video_fit === "full" ? "fit-full" : ""}"
-          ${this._config.disable_popup ? "" : 'role="button" tabindex="0" aria-label="Open camera stream"'}>
+        <div class="status">Connecting…</div>` : `<div class="stage ${this._config.enable_popup ? "popup-enabled" : ""} ${this._config.video_fit === "full" ? "fit-full" : ""}"
+          ${this._config.enable_popup ? 'role="button" tabindex="0" aria-label="Open camera stream"' : ""}>
           <video autoplay playsinline muted></video>
           <div class="status">Connecting…</div>
         </div>`}
@@ -252,7 +252,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._toneButton?.addEventListener("click", this._sendTestTone);
     this._copyDiagnosticsButton?.addEventListener("click", this._copyDiagnostics);
     const stage = this.shadowRoot.querySelector(".stage");
-    if (stage && !this._config.disable_popup) {
+    if (stage && this._config.enable_popup) {
       stage.addEventListener("click", this._openMoreInfo);
       stage.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") this._openMoreInfo(event);
@@ -294,7 +294,7 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _openMoreInfo = (event) => {
     event.preventDefault();
-    if (this._config.disable_popup) return;
+    if (!this._config.enable_popup) return;
     this.dispatchEvent(new CustomEvent("hass-more-info", {
       bubbles: true,
       composed: true,
