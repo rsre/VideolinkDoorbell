@@ -244,7 +244,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         ${this._controlsHidden ? "" : `<div class="controls">
           <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
           <button class="talk" type="button" aria-label="Hold to talk">Hold to talk</button>
-          ${this._config.talk_mode === "native" ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
+          ${this._config.talk_mode === "native" && this._config.debug ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
         ${this._config.debug ? '<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre><button class="copy-diagnostics" type="button">Copy diagnostics</button></details>' : ""}
       </ha-card>`;
