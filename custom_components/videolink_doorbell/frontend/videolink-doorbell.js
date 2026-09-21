@@ -24,6 +24,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
     this._nativeMixUnsubscribe = undefined;
+    this._nativeSessionReady = false;
+    this._nativeSessionStarting = undefined;
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
     this._nativePendingSends = new Set();
@@ -110,7 +112,10 @@ class VideolinkDoorbellCard extends HTMLElement {
       video_fit: videoFit,
     };
     if (!previous || changed) this._muted = true;
-    if (controlsHidden) this._stopMicrophone();
+    if (controlsHidden) {
+      this._stopMicrophone();
+      if (this._config.native_talk) this._stopNativeTalkSession();
+    }
     this._render();
     if (mediaChanged && this.isConnected) {
       this._restart();
@@ -361,6 +366,12 @@ class VideolinkDoorbellCard extends HTMLElement {
           this._diagnostics.connectMs = performance.now() - this._diagnostics.startedAt;
           this._setStatus("");
           this._updateTalkButton();
+          if (this._config.native_talk && !this._config.hide_controls) {
+            this._ensureNativeTalkSession().catch((error) => {
+              this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+              this._setStatus(`Native talk unavailable: ${this._diagnostics.nativeTalkError}`);
+            });
+          }
         }
         if (["failed", "disconnected"].includes(peer.connectionState)) {
           this._streamReady = false;
@@ -575,20 +586,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         return;
       }
       if (this._config.native_talk) {
-        await this._hass.callWS({
-          type: "videolink_doorbell/native_talk",
-          action: "start",
-          entity_id: this._config.entity,
-        });
-        this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
-          (message) => this._playNativeMix(message),
-          {
-            type: "videolink_doorbell/native_talk",
-            action: "subscribe",
-            entity_id: this._config.entity,
-          },
-          { resubscribe: false },
-        );
+        await this._ensureNativeTalkSession();
         await this._startNativeTalkCapture(this._micStream);
       } else if (this._keepaliveContext && this._microphoneGain && this._keepaliveTrack) {
         this._microphoneSource = this._keepaliveContext.createMediaStreamSource(this._micStream);
@@ -653,13 +651,6 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
       this._setStatus(`Test tone failed: ${this._diagnostics.nativeTalkError}`);
     } finally {
-      await this._hass.callWS({
-        type: "videolink_doorbell/native_talk",
-        action: "stop",
-        entity_id: this._config.entity,
-      }).catch((error) => {
-        this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
-      });
       this._toneTesting = false;
       this._updateToneButton();
     }
@@ -681,7 +672,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._microphoneSource?.disconnect();
     this._microphoneSource = undefined;
-    if (this._nativeTalking || this._nativeMixUnsubscribe || this._nativeContext) {
+    if (this._nativeTalking || this._nativeContext) {
       await this._stopNativeTalkCapture();
     }
     this._micStream?.getTracks().forEach((track) => track.stop());
@@ -773,15 +764,53 @@ class VideolinkDoorbellCard extends HTMLElement {
     gain.connect(context.destination);
   }
 
+  async _ensureNativeTalkSession() {
+    if (!this._config?.native_talk || this._config.hide_controls || !this._hass) return;
+    if (this._nativeSessionReady) return;
+    if (this._nativeSessionStarting) return this._nativeSessionStarting;
+    this._nativeSessionStarting = (async () => {
+      await this._hass.callWS({
+        type: "videolink_doorbell/native_talk",
+        action: "start",
+        entity_id: this._config.entity,
+      });
+      this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
+        (message) => this._playNativeMix(message),
+        {
+          type: "videolink_doorbell/native_talk",
+          action: "subscribe",
+          entity_id: this._config.entity,
+        },
+        { resubscribe: false },
+      );
+      this._nativeSessionReady = true;
+    })();
+    try {
+      await this._nativeSessionStarting;
+    } finally {
+      this._nativeSessionStarting = undefined;
+    }
+  }
+
   async _stopNativeTalkCapture() {
     this._nativeTalking = false;
     this._nativeProcessor?.disconnect();
     this._nativeSource?.disconnect();
     this._nativeGain?.disconnect();
-    // Camera native-talk playback is buffered and can arrive after the last
-    // microphone frame. Keep the mix subscription and playback context alive
-    // while that delayed audio drains; unsubscribing first discards it.
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await Promise.allSettled(this._nativePendingSends);
+    this._nativePendingSends.clear();
+    if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
+    this._nativeContext = undefined;
+    this._nativeSource = undefined;
+    this._nativeProcessor = undefined;
+    this._nativeGain = undefined;
+    this._nativeSendChain = Promise.resolve();
+    this._nativePcm = [];
+  }
+
+  async _stopNativeTalkSession() {
+    if (!this._nativeSessionReady && !this._nativeMixUnsubscribe && !this._nativeSessionStarting) return;
+    await this._nativeSessionStarting?.catch(() => undefined);
     if (this._nativeMixUnsubscribe) {
       // subscribeMessage() returns an async unsubscribe function. The custom
       // native-talk command is not a HA event subscription, so HA may reject
@@ -793,8 +822,6 @@ class VideolinkDoorbellCard extends HTMLElement {
         });
       this._nativeMixUnsubscribe = undefined;
     }
-    await Promise.allSettled(this._nativePendingSends);
-    this._nativePendingSends.clear();
     await this._hass.callWS({
       type: "videolink_doorbell/native_talk",
       action: "stop",
@@ -802,7 +829,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     }).catch((error) => {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
     });
-    if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
     await this._nativePlaybackChain.catch(() => undefined);
     if (this._nativePlaybackContext) await this._nativePlaybackContext.close().catch(() => undefined);
     this._nativeContext = undefined;
@@ -812,8 +838,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackContext = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
-    this._nativeSendChain = Promise.resolve();
-    this._nativePcm = [];
+    this._nativeSessionReady = false;
   }
 
   _playNativeMix(message) {
@@ -1035,6 +1060,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._streamReady = false;
     this._stopDiagnostics();
     await this._stopMicrophone();
+    await this._stopNativeTalkSession();
     await this._closeKeepaliveAudio();
     this._remoteStream?.getTracks().forEach((track) => track.stop());
     this._remoteStream = undefined;
