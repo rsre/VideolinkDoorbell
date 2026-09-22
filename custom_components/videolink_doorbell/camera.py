@@ -15,9 +15,11 @@ from .const import (
     CONF_CHANNEL,
     CONF_RTSP_PORT,
     CONF_STREAM,
+    CONF_VIDEO_SOURCE,
     DEFAULT_CHANNEL,
     DEFAULT_RTSP_PORT,
     DEFAULT_STREAM,
+    DEFAULT_VIDEO_SOURCE,
     DOMAIN,
 )
 from .go2rtc import get_streams_api
@@ -45,7 +47,7 @@ async def async_setup_entry(
 
 
 class VideolinkWebCamera(Camera):
-    """A Videolink camera using the web console API and FLV preview stream."""
+    """A Videolink camera using the configured preview stream."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -61,6 +63,7 @@ class VideolinkWebCamera(Camera):
         self._client = client
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         self._stream = entry.data.get(CONF_STREAM, DEFAULT_STREAM)
+        self._video_source = entry.data.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
         self._rtsp_port = entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
         if entry.unique_id is None:
             raise ValueError("Videolink config entry has no unique ID")
@@ -82,16 +85,20 @@ class VideolinkWebCamera(Camera):
         return await self._client.snapshot(self._channel)
 
     async def stream_source(self) -> str:
-        """Return FLV video and register an RTSP audio backchannel in go2rtc."""
-        flv_url = await self._client.flv_url(self._channel, self._stream)
-        await self._async_register_go2rtc_sources(flv_url)
-        return flv_url
+        """Return the configured video source and register talkback in go2rtc."""
+        if self._video_source == "rtsp":
+            video_url = self._client.rtsp_url(
+                self._channel, self._stream, self._rtsp_port
+            )
+        else:
+            video_url = await self._client.flv_url(self._channel, self._stream)
+        await self._async_register_go2rtc_sources(video_url)
+        return video_url
 
-    async def _async_register_go2rtc_sources(self, flv_url: str) -> None:
+    async def _async_register_go2rtc_sources(self, video_url: str) -> None:
         """Register the console video and talk backchannel as one go2rtc stream."""
         # Home Assistant's provider currently accepts one source from Camera, but
-        # go2rtc supports multiple producers. Register the composite first; the
-        # provider preserves it because the primary FLV producer already matches.
+        # go2rtc supports multiple producers. Register the composite first.
         from homeassistant.components.go2rtc.util import get_camera_identifier
 
         streams_api = get_streams_api(self.hass)
@@ -107,7 +114,7 @@ class VideolinkWebCamera(Camera):
         )
         try:
             streams = await streams_api.list()
-            expected = {flv_url, rtsp_url}
+            expected = {video_url, rtsp_url}
             current = (
                 {producer.url for producer in streams.get(identifier, ()).producers}
                 if identifier in streams
@@ -118,7 +125,7 @@ class VideolinkWebCamera(Camera):
             await streams_api.add(
                 identifier,
                 [
-                    flv_url,
+                    video_url,
                     rtsp_url,
                     f"ffmpeg:{identifier}#audio=opus",
                 ],

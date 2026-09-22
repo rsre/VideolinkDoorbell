@@ -23,13 +23,16 @@ from .const import (
     CONF_CHANNEL,
     CONF_RTSP_PORT,
     CONF_STREAM,
+    CONF_VIDEO_SOURCE,
     CONF_VERIFY_SSL,
     DEFAULT_CHANNEL,
     DEFAULT_RTSP_PORT,
     DEFAULT_STREAM,
+    DEFAULT_VIDEO_SOURCE,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
     STREAMS,
+    VIDEO_SOURCES,
 )
 
 
@@ -56,6 +59,14 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=list(STREAMS), translation_key="stream"
+                    )
+                ),
+                vol.Required(
+                    CONF_VIDEO_SOURCE,
+                    default=values.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=list(VIDEO_SOURCES), translation_key="video_source"
                     )
                 ),
                 vol.Required(

@@ -54,6 +54,13 @@ def test_rtsp_backchannel_url_explicitly_requests_onvif_backchannel() -> None:
     )
 
 
+def test_rtsp_url_omits_backchannel_parameters() -> None:
+    client = api.VideolinkClient(object(), "camera.local", "user", "password")
+    assert client.rtsp_url(0, "main", 554).endswith(
+        "/h264Preview_01_main"
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_token_requests_share_one_login() -> None:
     class Client(api.VideolinkClient):

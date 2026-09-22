@@ -292,12 +292,23 @@ class VideolinkClient:
 
     def rtsp_backchannel_url(self, channel: int, stream: str, rtsp_port: int) -> str:
         """Build the complete secondary RTSP producer with ONVIF backchannel."""
+        return self._rtsp_url(channel, stream, rtsp_port, backchannel=True)
+
+    def rtsp_url(self, channel: int, stream: str, rtsp_port: int) -> str:
+        """Build the normal RTSP preview URL without talkback parameters."""
+        return self._rtsp_url(channel, stream, rtsp_port, backchannel=False)
+
+    def _rtsp_url(
+        self, channel: int, stream: str, rtsp_port: int, *, backchannel: bool
+    ) -> str:
+        """Build a camera RTSP URL, optionally enabling the ONVIF backchannel."""
         username = quote(self.username, safe="")
         password = quote(self.password, safe="")
-        return (
+        url = (
             f"rtsp://{username}:{password}@{self.url_host}:{rtsp_port}/"
-            f"h264Preview_{channel + 1:02d}_{stream}#backchannel=1#transport=udp"
+            f"h264Preview_{channel + 1:02d}_{stream}"
         )
+        return f"{url}#backchannel=1#transport=udp" if backchannel else url
 
     async def native_talk_start(self, channel: int, *, mix_frame_callback=None):
         """Open and configure the experimental native Baichuan talk path."""

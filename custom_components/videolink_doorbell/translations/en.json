@@ -20,6 +20,7 @@
           "username": "Username",
           "password": "Password",
           "stream": "Video quality",
+          "video_source": "Video source",
           "rtsp_port": "RTSP backchannel port",
           "verify_ssl": "Verify HTTPS certificate"
         }
@@ -33,6 +34,7 @@
           "username": "Username",
           "password": "Password",
           "stream": "Video quality",
+          "video_source": "Video source",
           "rtsp_port": "RTSP backchannel port",
           "verify_ssl": "Verify HTTPS certificate"
         }
@@ -52,6 +54,12 @@
       "options": {
         "main": "Clear (main stream)",
         "sub": "Fluent (sub stream)"
+      }
+    },
+    "video_source": {
+      "options": {
+        "flv": "FLV (web console)",
+        "rtsp": "RTSP (camera stream)"
       }
     }
   }
