@@ -30,7 +30,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSessionReady = false;
     this._nativeSessionStarting = undefined;
     this._nativePcm = [];
-    this._nativeSendChain = Promise.resolve();
     this._nativePendingSends = new Set();
     this._nativeQueueLimit = 32;
     this._nativeFrameCount = 0;
@@ -788,7 +787,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeContext = context;
     this._nativeSource = source;
     this._nativeGain = gain;
-    this._nativeSendChain = Promise.resolve();
     this._nativePendingSends.clear();
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
@@ -887,23 +885,18 @@ class VideolinkDoorbellCard extends HTMLElement {
       binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
     }
     const encoded = btoa(binary);
-    const queuedAt = performance.now();
-    // Keep microphone frames ordered. The native DVI-4 encoder is stateful,
-    // so concurrent WebSocket commands can arrive out of order.
-    const request = this._nativeSendChain.then(async () => {
-      this._diagnostics.nativeQueueWaitMs = performance.now() - queuedAt;
-      const sentAt = performance.now();
-      await this._hass.callWS({
-        type: "videolink_doorbell/native_talk",
-        action: "audio",
-        entity_id: this._config.entity,
-        pcm: encoded,
-      });
+    const sentAt = performance.now();
+    this._diagnostics.nativeQueueWaitMs = 0;
+    const request = this._hass.callWS({
+      type: "videolink_doorbell/native_talk",
+      action: "audio",
+      entity_id: this._config.entity,
+      pcm: encoded,
+    }).then(() => {
       this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
     }).catch((error) => {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
     });
-    this._nativeSendChain = request;
     this._nativePendingSends.add(request);
     this._diagnostics.nativeQueueDepth = this._nativePendingSends.size;
     request.then(
@@ -962,7 +955,6 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
     this._nativeWorkletUrl = undefined;
-    this._nativeSendChain = Promise.resolve();
     this._diagnostics.nativeQueueDepth = 0;
   }
 
@@ -1211,7 +1203,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Track attached to first packet: ${ms(this._diagnostics.firstOutboundPacketMs)}`,
       `Native audio frames: ${value(this._diagnostics.nativeFrames)}`,
       `Native capture interval: ${ms(this._diagnostics.nativeCallbackIntervalMs)}`,
-      `Native queue wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
+      `Native dispatch wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
       `Native queue depth: ${value(this._diagnostics.nativeQueueDepth)}`,
       this._diagnostics.nativeQueueOverflow ? "Native queue overflow: yes" : "",
       `Native WebSocket ack: ${ms(this._diagnostics.nativeWsAckMs)}`,

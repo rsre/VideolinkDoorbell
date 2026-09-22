@@ -944,12 +944,16 @@ class NativeTalkSession:
                     encrypt_xml=self._encrypt_xml,
                 )
             )
-            # If a sender falls behind, do not immediately flush all queued
-            # frames as a TCP burst. Restart the clock after the actual write
-            # so the camera receives one block per audio-frame duration.
-            self._next_audio_send_at = max(
-                self._next_audio_send_at + self._audio_frame_duration,
-                time.monotonic() + self._audio_frame_duration,
+            # Advance on the audio clock, not from write completion. This
+            # prevents normal socket/write time from being added to every
+            # frame. If the sender is genuinely late, restart one frame ahead
+            # instead of flushing the backlog as a TCP burst.
+            next_deadline = self._next_audio_send_at + self._audio_frame_duration
+            now = time.monotonic()
+            self._next_audio_send_at = (
+                next_deadline
+                if next_deadline > now
+                else now + self._audio_frame_duration
             )
 
     async def stop_talk(self) -> None:
@@ -1063,6 +1067,11 @@ class NativeTalkChannel:
 
     async def send_pcm(self, pcm16le: bytes) -> None:
         """Queue one negotiated PCM frame for ordered transmission."""
+        completion = await self.enqueue_pcm(pcm16le)
+        await completion
+
+    async def enqueue_pcm(self, pcm16le: bytes) -> asyncio.Future[None]:
+        """Queue one frame and return without waiting for camera transmission."""
         if not self.active or self._audio_queue is None:
             raise RuntimeError("native talk session is not active")
         if self._audio_error is not None:
@@ -1077,7 +1086,7 @@ class NativeTalkChannel:
                 raise RuntimeError("native talk session is not active after restart")
         completion = asyncio.get_running_loop().create_future()
         await self._audio_queue.put((pcm16le, completion))
-        await completion
+        return completion
 
     async def restart(self) -> None:
         """Replace a failed native connection with a freshly negotiated session."""

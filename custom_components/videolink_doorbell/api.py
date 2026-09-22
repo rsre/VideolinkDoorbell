@@ -325,13 +325,22 @@ class VideolinkClient:
         """Return the currently negotiated native talk configuration."""
         return self._native_talk.talk_config if self._native_talk is not None else None
 
-    async def native_talk_audio(self, pcm16le: bytes) -> None:
+    async def native_talk_audio(self, pcm16le: bytes, *, wait: bool = True) -> None:
         """Encode and send exactly one negotiated PCM talk frame."""
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
         await self.native_talk_start(self._native_talk.channel)
         try:
-            await self._native_talk.send_pcm(pcm16le)
+            if wait:
+                await self._native_talk.send_pcm(pcm16le)
+            else:
+                completion = await self._native_talk.enqueue_pcm(pcm16le)
+                # The WebSocket command acknowledges enqueueing, not camera
+                # playback. Consume a later worker exception so asyncio does
+                # not report an unhandled Future exception.
+                completion.add_done_callback(
+                    lambda future: None if future.cancelled() else future.exception()
+                )
         except RuntimeError as err:
             raise VideolinkConnectionError(str(err)) from err
 

@@ -57,7 +57,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         elif action == "audio":
             config = await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
             pcm = _decode_pcm(msg.get("pcm"), config.length_per_encoder)
-            await client.native_talk_audio(pcm)
+            await client.native_talk_audio(pcm, wait=False)
             result = {"ok": True}
         elif action == "tone":
             await client.native_talk_tone(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
