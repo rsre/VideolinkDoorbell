@@ -306,7 +306,8 @@ class VideolinkClient:
         password = quote(self.password, safe="")
         url = (
             f"rtsp://{username}:{password}@{self.url_host}:{rtsp_port}/"
-            f"h264Preview_{channel + 1:02d}_{stream}"
+            f"{'Preview' if backchannel else 'h264Preview'}_"
+            f"{channel + 1:02d}_{stream}"
         )
         return f"{url}#backchannel=1#transport=udp" if backchannel else url
 
