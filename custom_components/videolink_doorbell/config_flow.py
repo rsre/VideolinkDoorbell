@@ -6,7 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -44,14 +44,17 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def _schema(self, defaults: dict[str, Any] | None = None) -> vol.Schema:
         """Build the camera configuration schema."""
         values = defaults or {}
+        advanced_defaults = {
+            CONF_PORT: values.get(CONF_PORT, 443),
+            CONF_VIDEO_SOURCE: values.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE),
+            CONF_RTSP_PORT: values.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
+            CONF_VERIFY_SSL: values.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+        }
         return vol.Schema(
             {
                 vol.Required(
                     CONF_HOST, default=values.get(CONF_HOST, "192.168.1.40")
                 ): str,
-                vol.Required(CONF_PORT, default=values.get(CONF_PORT, 443)): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=65535)
-                ),
                 vol.Required(CONF_USERNAME, default=values.get(CONF_USERNAME, "")): str,
                 vol.Required(CONF_PASSWORD, default=values.get(CONF_PASSWORD, "")): str,
                 vol.Required(
@@ -61,24 +64,43 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         options=list(STREAMS), translation_key="stream"
                     )
                 ),
-                vol.Required(
-                    CONF_VIDEO_SOURCE,
-                    default=values.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE),
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=list(VIDEO_SOURCES), translation_key="video_source"
-                    )
+                vol.Required("advanced"): data_entry_flow.section(
+                    vol.Schema(
+                        {
+                            vol.Required(
+                                CONF_PORT,
+                                default=advanced_defaults[CONF_PORT],
+                            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+                            vol.Required(
+                                CONF_VIDEO_SOURCE,
+                                default=advanced_defaults[CONF_VIDEO_SOURCE],
+                            ): SelectSelector(
+                                SelectSelectorConfig(
+                                    options=list(VIDEO_SOURCES),
+                                    translation_key="video_source",
+                                )
+                            ),
+                            vol.Required(
+                                CONF_RTSP_PORT,
+                                default=advanced_defaults[CONF_RTSP_PORT],
+                            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+                            vol.Required(
+                                CONF_VERIFY_SSL,
+                                default=advanced_defaults[CONF_VERIFY_SSL],
+                            ): bool,
+                        }
+                    ),
+                    {"collapsed": True},
                 ),
-                vol.Required(
-                    CONF_RTSP_PORT,
-                    default=values.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-                vol.Required(
-                    CONF_VERIFY_SSL,
-                    default=values.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-                ): bool,
             }
         )
+
+    @staticmethod
+    def _flatten_advanced(user_input: dict[str, Any]) -> dict[str, Any]:
+        """Store section values in the flat config-entry data structure."""
+        advanced = user_input.pop("advanced", {})
+        user_input.update(advanced)
+        return user_input
 
     async def _async_validate(self, user_input: dict[str, Any]) -> DeviceInfo:
         """Validate settings and return camera identity."""
@@ -117,6 +139,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Collect and validate camera settings."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            user_input = self._flatten_advanced(user_input)
             user_input = {**user_input, CONF_CHANNEL: DEFAULT_CHANNEL}
             try:
                 info = await self._async_validate(user_input)
@@ -144,6 +167,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
+            user_input = self._flatten_advanced(user_input)
             updated = {**entry.data, **user_input}
             source_only = (
                 updated.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)

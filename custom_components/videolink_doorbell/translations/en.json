@@ -16,13 +16,20 @@
         "description": "Enter the same credentials used at the camera's web console.",
         "data": {
           "host": "Host",
-          "port": "HTTPS port",
           "username": "Username",
           "password": "Password",
-          "stream": "Video quality",
-          "video_source": "Video source",
-          "rtsp_port": "RTSP backchannel port",
-          "verify_ssl": "Verify HTTPS certificate"
+          "stream": "Video quality"
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "data": {
+              "port": "HTTPS port",
+              "video_source": "Video source",
+              "rtsp_port": "RTSP backchannel port",
+              "verify_ssl": "Verify HTTPS certificate"
+            }
+          }
         }
       },
       "reconfigure": {
@@ -30,13 +37,20 @@
         "description": "Update the camera connection and stream settings.",
         "data": {
           "host": "Host",
-          "port": "HTTPS port",
           "username": "Username",
           "password": "Password",
-          "stream": "Video quality",
-          "video_source": "Video source",
-          "rtsp_port": "RTSP backchannel port",
-          "verify_ssl": "Verify HTTPS certificate"
+          "stream": "Video quality"
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "data": {
+              "port": "HTTPS port",
+              "video_source": "Video source",
+              "rtsp_port": "RTSP backchannel port",
+              "verify_ssl": "Verify HTTPS certificate"
+            }
+          }
         }
       },
       "reauth_confirm": {
