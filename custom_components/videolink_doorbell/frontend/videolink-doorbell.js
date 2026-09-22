@@ -653,6 +653,9 @@ class VideolinkDoorbellCard extends HTMLElement {
       const sender = this._audioSender;
       if (!sender) throw new Error("WebRTC audio sender is unavailable");
       await this._keepaliveContext?.resume().catch(() => undefined);
+      if (this._config.talk_mode !== "native" && this._keepaliveTrack) {
+        await sender.replaceTrack(this._keepaliveTrack);
+      }
       this._outboundPacketsAtAttach = await this._getOutboundAudioPackets();
       if (!this._talkRequested || track.readyState === "ended") {
         await this._stopMicrophone();
@@ -796,8 +799,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateSoundButton();
     this._updateTalkButton();
     this._micStream = undefined;
-    if (sender && !this._keepaliveTrack) {
-      await sender.replaceTrack(this._keepaliveTrack).catch(() => undefined);
+    if (sender && this._config?.talk_mode !== "native") {
+      // Stop sending the RTSP backchannel when PTT ends. The WebRTC session
+      // remains available, but no silent RTP keepalive is sent to the camera.
+      await sender.replaceTrack(null).catch(() => undefined);
     }
   }
 
