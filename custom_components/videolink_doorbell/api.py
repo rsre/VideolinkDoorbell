@@ -299,7 +299,7 @@ class VideolinkClient:
             f"h264Preview_{channel + 1:02d}_{stream}#backchannel=1#transport=udp"
         )
 
-    async def native_talk_start(self, channel: int, *, mix_frame_callback=None) -> None:
+    async def native_talk_start(self, channel: int, *, mix_frame_callback=None):
         """Open and configure the experimental native Baichuan talk path."""
         async with self._native_talk_lock:
             if self._native_talk is None:
@@ -318,9 +318,15 @@ class VideolinkClient:
                     raise
             elif self._native_talk.failed:
                 await self._native_talk.restart()
+            return self._native_talk.talk_config
+
+    @property
+    def native_talk_config(self):
+        """Return the currently negotiated native talk configuration."""
+        return self._native_talk.talk_config if self._native_talk is not None else None
 
     async def native_talk_audio(self, pcm16le: bytes) -> None:
-        """Encode and send exactly one 1024-sample PCM talk frame."""
+        """Encode and send exactly one negotiated PCM talk frame."""
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
         await self.native_talk_start(self._native_talk.channel)

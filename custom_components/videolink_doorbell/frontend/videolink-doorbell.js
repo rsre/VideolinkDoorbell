@@ -21,6 +21,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
     this._nativeWorkletUrl = undefined;
+    this._nativeSampleRate = 16000;
+    this._nativeFrameSamples = 1024;
     this._nativePlaybackContext = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
@@ -776,7 +778,9 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _startNativeTalkCapture(stream) {
-    const context = new AudioContext({ sampleRate: 16000 });
+    const targetSampleRate = this._nativeSampleRate;
+    const frameSamples = this._nativeFrameSamples;
+    const context = new AudioContext({ sampleRate: targetSampleRate });
     await context.resume();
     const source = context.createMediaStreamSource(stream);
     const gain = context.createGain();
@@ -801,7 +805,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           super();
           this.buffer = [];
           this.position = 0;
-          this.ratio = sampleRate / 16000;
+          this.ratio = sampleRate / ${JSON.stringify(targetSampleRate)};
         }
         process(inputs) {
           const input = inputs[0] && inputs[0][0];
@@ -809,8 +813,8 @@ class VideolinkDoorbellCard extends HTMLElement {
           for (const sample of input) this.buffer.push(sample);
           while (this.position + 1 < this.buffer.length) {
             const available = this.buffer.length - this.position - 1;
-            if (available < 1024 * this.ratio) break;
-            const pcm = new Int16Array(1024);
+            if (available < ${JSON.stringify(frameSamples)} * this.ratio) break;
+            const pcm = new Int16Array(${JSON.stringify(frameSamples)});
             for (let index = 0; index < pcm.length; index++) {
               const position = this.position + index * this.ratio;
               const left = Math.floor(position);
@@ -818,7 +822,7 @@ class VideolinkDoorbellCard extends HTMLElement {
               const sample = this.buffer[left] * (1 - fraction) + this.buffer[left + 1] * fraction;
               pcm[index] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
             }
-            this.position += 1024 * this.ratio;
+            this.position += ${JSON.stringify(frameSamples)} * this.ratio;
             const consumed = Math.floor(this.position);
             if (consumed > 0) {
               this.buffer.splice(0, consumed);
@@ -872,7 +876,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._nativeTalking = false;
       this._setStatus("Microphone transmission is falling behind. Release and try again.");
       console.error("[Videolink] Native audio transport queue overflow");
-      this._stopNativeTalkCapture().catch((error) => {
+      this._stopMicrophone().catch((error) => {
         console.error("[Videolink] Failed to stop native audio capture", error);
       });
       return;
@@ -919,11 +923,13 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._nativeSessionReady) return;
     if (this._nativeSessionStarting) return this._nativeSessionStarting;
     this._nativeSessionStarting = (async () => {
-      await this._hass.callWS({
+      const config = await this._hass.callWS({
         type: "videolink_doorbell/native_talk",
         action: "start",
         entity_id: this._config.entity,
       });
+      this._nativeSampleRate = Number(config?.sample_rate) || 16000;
+      this._nativeFrameSamples = Number(config?.samples_per_frame) || 1024;
       this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
         (message) => this._playNativeMix(message),
         {

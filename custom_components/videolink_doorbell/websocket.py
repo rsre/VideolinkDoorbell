@@ -48,14 +48,23 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
     try:
         action = msg["action"]
         if action == "start":
-            await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            config = await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            result = {
+                "ok": True,
+                "sample_rate": config.sample_rate,
+                "samples_per_frame": config.length_per_encoder,
+            }
         elif action == "audio":
-            pcm = _decode_pcm(msg.get("pcm"))
+            config = await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            pcm = _decode_pcm(msg.get("pcm"), config.length_per_encoder)
             await client.native_talk_audio(pcm)
+            result = {"ok": True}
         elif action == "tone":
             await client.native_talk_tone(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            result = {"ok": True}
         elif action == "stop":
             await client.native_talk_stop()
+            result = {"ok": True}
         else:
             subscription_id = msg["id"]
 
@@ -73,23 +82,27 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                     return
 
             await client.native_talk_set_mix_callback(on_mix_frame)
+            result = {"ok": True}
     except (ValueError, binascii.Error) as err:
         connection.send_error(msg["id"], "invalid_format", str(err))
         return
     except Exception as err:  # Let HA surface camera/network failures to the card.
         connection.send_error(msg["id"], "native_talk_failed", str(err))
         return
-    connection.send_result(msg["id"], {"ok": True})
+    connection.send_result(msg["id"], result)
 
 
 @callback
-def _decode_pcm(encoded: str | None) -> bytes:
+def _decode_pcm(encoded: str | None, samples_per_frame: int) -> bytes:
     if not encoded:
         raise ValueError("pcm is required for audio messages")
     try:
         pcm = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as err:
         raise ValueError("pcm must be strict base64") from err
-    if len(pcm) != 1024 * 2:
-        raise ValueError("pcm must contain exactly 1024 signed 16-bit samples")
+    expected_bytes = samples_per_frame * 2
+    if len(pcm) != expected_bytes:
+        raise ValueError(
+            f"pcm must contain exactly {samples_per_frame} signed 16-bit samples"
+        )
     return pcm

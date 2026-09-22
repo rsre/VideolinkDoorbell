@@ -613,6 +613,9 @@ class NativeTalkSession:
         self._audio_sequence = 0
         self._audio_encoder = Dvi4Encoder()
         self._audio_send_lock = asyncio.Lock()
+        self._audio_samples_per_frame = SAMPLES_PER_FRAME
+        self._audio_frame_duration = FRAME_DURATION_MS / 1000
+        self._next_audio_send_at: float | None = None
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
         self._aec = AdaptiveEchoCanceller()
@@ -714,6 +717,7 @@ class NativeTalkSession:
             pass
         finally:
             self._logged_in = False
+            self._next_audio_send_at = None
 
     def _encrypt_xml(self, offset: int, payload: bytes) -> bytes:
         if self._encryption_mode in (0x02, 0x12):
@@ -774,6 +778,11 @@ class NativeTalkSession:
                 )
         if header.response_code != 200:
             raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
+        if config.sample_rate <= 0 or config.length_per_encoder <= 0:
+            raise ValueError("camera returned an invalid audio frame configuration")
+        self._audio_samples_per_frame = config.length_per_encoder
+        self._audio_frame_duration = config.length_per_encoder / config.sample_rate
+        self._next_audio_send_at = None
         if config.audio_stream_mode == "mixAudioStream":
             self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
 
@@ -910,10 +919,20 @@ class NativeTalkSession:
 
     async def send_pcm(self, pcm16le: bytes) -> None:
         """Encode and send one PCM talk frame using continuous DVI-4 state."""
+        expected_bytes = self._audio_samples_per_frame * 2
+        if len(pcm16le) != expected_bytes:
+            raise ValueError(
+                f"expected {self._audio_samples_per_frame} samples "
+                f"({expected_bytes} PCM bytes), got {len(pcm16le)} bytes"
+            )
         # The encoder carries predictor/index state across frames.  Keep the
         # encoding inside the same lock as transmission so concurrent
         # WebSocket audio commands cannot corrupt or reorder that state.
         async with self._audio_send_lock:
+            now = time.monotonic()
+            if self._next_audio_send_at is None:
+                self._next_audio_send_at = now
+            await asyncio.sleep(max(0.0, self._next_audio_send_at - now))
             encoded = self._audio_encoder.encode_pcm16le(pcm16le)
             self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
             await self.client.send(
@@ -924,6 +943,13 @@ class NativeTalkSession:
                     sequence=self._audio_sequence,
                     encrypt_xml=self._encrypt_xml,
                 )
+            )
+            # If a sender falls behind, do not immediately flush all queued
+            # frames as a TCP burst. Restart the clock after the actual write
+            # so the camera receives one block per audio-frame duration.
+            self._next_audio_send_at = max(
+                self._next_audio_send_at + self._audio_frame_duration,
+                time.monotonic() + self._audio_frame_duration,
             )
 
     async def stop_talk(self) -> None:
@@ -948,6 +974,8 @@ class NativeTalkSession:
 
 class NativeTalkChannel:
     """High-level native-talk session with negotiated audio and lifecycle state."""
+
+    AUDIO_QUEUE_MAXSIZE = 32
 
     def __init__(
         self,
@@ -999,7 +1027,7 @@ class NativeTalkChannel:
                 await transport.open_talk(config)
                 self.transport = transport
                 self.talk_config = config
-                self._audio_queue = asyncio.Queue()
+                self._audio_queue = asyncio.Queue(maxsize=self.AUDIO_QUEUE_MAXSIZE)
                 self._audio_error = None
                 self._audio_worker = asyncio.create_task(self._audio_worker_loop())
             except Exception:
