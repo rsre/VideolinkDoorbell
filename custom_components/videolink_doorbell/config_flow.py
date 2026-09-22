@@ -145,6 +145,18 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             updated = {**entry.data, **user_input}
+            source_only = (
+                updated.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
+                != entry.data.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
+                and all(
+                    updated.get(key) == entry.data.get(key)
+                    for key in updated
+                    if key != CONF_VIDEO_SOURCE
+                )
+            )
+            if source_only:
+                self.hass.config_entries.async_update_entry(entry, data=updated)
+                return self.async_abort(reason="reconfigure_successful")
             try:
                 info = await self._async_validate(updated)
             except VideolinkAuthError:

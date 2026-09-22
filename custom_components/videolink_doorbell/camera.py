@@ -43,7 +43,9 @@ async def async_setup_entry(
     """Create the camera entity."""
     client = entry.runtime_data
     info = await client.device_info()
-    async_add_entities([VideolinkWebCamera(entry, client, info)])
+    camera = VideolinkWebCamera(entry, client, info)
+    async_add_entities([camera])
+    entry.async_on_unload(entry.add_update_listener(camera.async_config_entry_updated))
 
 
 class VideolinkWebCamera(Camera):
@@ -83,6 +85,26 @@ class VideolinkWebCamera(Camera):
     ) -> bytes | None:
         """Return the current console snapshot."""
         return await self._client.snapshot(self._channel)
+
+    async def async_config_entry_updated(
+        self, _hass: HomeAssistant, entry: ConfigEntry[VideolinkClient]
+    ) -> None:
+        """Apply a live video-source change without recreating the entity."""
+        video_source = entry.data.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
+        if video_source == self._video_source:
+            return
+        self._video_source = video_source
+        try:
+            if video_source == "rtsp":
+                video_url = self._client.rtsp_url(
+                    self._channel, self._stream, self._rtsp_port
+                )
+            else:
+                video_url = await self._client.flv_url(self._channel, self._stream)
+            await self._async_register_go2rtc_sources(video_url)
+        except Exception:  # noqa: BLE001 - retain the entity if refresh fails
+            _LOGGER.exception("Unable to refresh the camera video source")
+        self.async_write_ha_state()
 
     async def stream_source(self) -> str:
         """Return the configured video source and register talkback in go2rtc."""
