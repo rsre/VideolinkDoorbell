@@ -20,6 +20,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSource = undefined;
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
+    this._nativeWorkletUrl = undefined;
     this._nativePlaybackContext = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
@@ -29,6 +30,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
     this._nativePendingSends = new Set();
+    this._nativeQueueLimit = 32;
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
     this._nativeTalking = false;
@@ -49,6 +51,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._mutedBeforeTalk = undefined;
     this._diagnosticTimer = undefined;
     this._collectingStats = false;
+    this._diagnosticStatsSample = undefined;
     this._diagnostics = {};
     this._outboundPacketsAtAttach = undefined;
   }
@@ -369,6 +372,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._startingGeneration = generation;
     this._streamReady = false;
     this._diagnostics = { startedAt: performance.now(), phase: "connecting" };
+    this._diagnosticStatsSample = undefined;
     this._updateTalkButton();
     this._updateDiagnosticsView();
     this._setStatus("Connecting…");
@@ -427,6 +431,7 @@ class VideolinkDoorbellCard extends HTMLElement {
 
       const audioTransceiver = peer.addTransceiver("audio", { direction: "sendrecv" });
       this._preferLowLatencyAudio(audioTransceiver);
+      this._setAudioPlayoutDelay(audioTransceiver);
       this._audioSender = audioTransceiver.sender;
       if (this._keepaliveTrack) await this._audioSender.replaceTrack(this._keepaliveTrack);
       if (!this._audioOnly) peer.addTransceiver("video", { direction: "recvonly" });
@@ -528,17 +533,37 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _setLowLatencyAudioPacketization(offer) {
     if (!offer?.sdp) return offer;
-    const lines = offer.sdp.split("\\r\\n");
+    const lines = offer.sdp.split("\r\n");
     const audioIndex = lines.findIndex((line) => line.startsWith("m=audio "));
     if (audioIndex < 0) return offer;
     const nextMediaIndex = lines.findIndex(
       (line, index) => index > audioIndex && line.startsWith("m="),
     );
     const audioEnd = nextMediaIndex < 0 ? lines.length : nextMediaIndex;
-    if (!lines.slice(audioIndex, audioEnd).some((line) => line.startsWith("a=ptime:"))) {
-      lines.splice(audioEnd, 0, "a=ptime:10");
+    const audioLines = lines.slice(audioIndex, audioEnd);
+    const ptimeOffset = audioLines.findIndex((line) => line.startsWith("a=ptime:"));
+    if (ptimeOffset >= 0) lines[audioIndex + ptimeOffset] = "a=ptime:20";
+    else lines.splice(audioEnd, 0, "a=ptime:20");
+    const updatedNextMediaIndex = lines.findIndex(
+      (line, index) => index > audioIndex && line.startsWith("m="),
+    );
+    const updatedAudioEnd = updatedNextMediaIndex < 0 ? lines.length : updatedNextMediaIndex;
+    const updatedAudioLines = lines.slice(audioIndex, updatedAudioEnd);
+    if (!updatedAudioLines.some((line) => line.startsWith("a=maxptime:"))) {
+      lines.splice(updatedAudioEnd, 0, "a=maxptime:20");
     }
-    return { ...offer, sdp: lines.join("\\r\\n") };
+    return { ...offer, sdp: lines.join("\r\n") };
+  }
+
+  _setAudioPlayoutDelay(transceiver) {
+    // Keep the browser receiver from growing an unbounded buffer when packet
+    // timing varies. Browsers without this optional hint ignore it.
+    if (!("playoutDelayHint" in transceiver.receiver)) return;
+    try {
+      transceiver.receiver.playoutDelayHint = 0.2;
+    } catch {
+      // Older browsers may expose the property as read-only.
+    }
   }
 
   async _handleSignal(event, generation) {
@@ -754,71 +779,139 @@ class VideolinkDoorbellCard extends HTMLElement {
     const context = new AudioContext({ sampleRate: 16000 });
     await context.resume();
     const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(1024, 1, 1);
     const gain = context.createGain();
     gain.gain.value = 0;
     this._nativeContext = context;
     this._nativeSource = source;
-    this._nativeProcessor = processor;
     this._nativeGain = gain;
-    this._nativePcm = [];
     this._nativeSendChain = Promise.resolve();
+    this._nativePendingSends.clear();
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
+    this._diagnostics.nativeFrames = 0;
+    this._diagnostics.nativeQueueDepth = 0;
+    this._diagnostics.nativeQueueOverflow = false;
+    this._diagnostics.nativeQueueWaitMs = undefined;
+    this._diagnostics.nativeCallbackIntervalMs = undefined;
+    this._diagnostics.nativeWsAckMs = undefined;
     this._nativeTalking = true;
-    processor.onaudioprocess = (event) => {
-      if (!this._nativeTalking) return;
-      const input = event.inputBuffer.getChannelData(0);
-      const ratio = context.sampleRate / 16000;
-      for (const sample of input) this._nativePcm.push(sample);
-      const needed = Math.ceil(1024 * ratio);
-      while (this._nativePcm.length >= needed) {
-        const pcm = new Int16Array(1024);
-        for (let index = 0; index < pcm.length; index++) {
-          const sample = this._nativePcm[Math.min(Math.floor(index * ratio), this._nativePcm.length - 1)];
-          pcm[index] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+    const workletCode = `
+      class VideolinkCaptureProcessor extends AudioWorkletProcessor {
+        constructor() {
+          super();
+          this.buffer = [];
+          this.position = 0;
+          this.ratio = sampleRate / 16000;
         }
-        this._nativePcm.splice(0, needed);
-        const capturedAt = performance.now();
-        this._nativeFrameCount += 1;
-        this._diagnostics.nativeFrames = this._nativeFrameCount;
-        if (this._nativeLastCaptureAt !== undefined) {
-          this._diagnostics.nativeCallbackIntervalMs = capturedAt - this._nativeLastCaptureAt;
+        process(inputs) {
+          const input = inputs[0] && inputs[0][0];
+          if (!input) return true;
+          for (const sample of input) this.buffer.push(sample);
+          while (this.position + 1 < this.buffer.length) {
+            const available = this.buffer.length - this.position - 1;
+            if (available < 1024 * this.ratio) break;
+            const pcm = new Int16Array(1024);
+            for (let index = 0; index < pcm.length; index++) {
+              const position = this.position + index * this.ratio;
+              const left = Math.floor(position);
+              const fraction = position - left;
+              const sample = this.buffer[left] * (1 - fraction) + this.buffer[left + 1] * fraction;
+              pcm[index] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+            }
+            this.position += 1024 * this.ratio;
+            const consumed = Math.floor(this.position);
+            if (consumed > 0) {
+              this.buffer.splice(0, consumed);
+              this.position -= consumed;
+            }
+            this.port.postMessage(pcm.buffer, [pcm.buffer]);
+          }
+          return true;
         }
-        this._nativeLastCaptureAt = capturedAt;
-        const bytes = new Uint8Array(pcm.buffer);
-        let binary = "";
-        for (let index = 0; index < bytes.length; index += 0x8000) {
-          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-        }
-        const encoded = btoa(binary);
-        this._diagnostics.nativeQueueWaitMs = performance.now() - capturedAt;
-        // Keep microphone frames ordered. The native DVI-4 encoder is
-        // stateful, and concurrent WebSocket commands can arrive out of order
-        // when browser/network latency varies.
-        const request = this._nativeSendChain.then(async () => {
-          const sentAt = performance.now();
-          await this._hass.callWS({
-            type: "videolink_doorbell/native_talk",
-            action: "audio",
-            entity_id: this._config.entity,
-            pcm: encoded,
-          });
-      this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
-        }).catch((error) => {
-          this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
-        });
-        this._nativeSendChain = request;
-        this._nativePendingSends.add(request);
-        request.then(
-          () => this._nativePendingSends.delete(request),
-          () => this._nativePendingSends.delete(request),
-        );
       }
-    };
-    source.connect(processor);
-    processor.connect(gain);
-    gain.connect(context.destination);
+      registerProcessor("videolink-native-capture", VideolinkCaptureProcessor);
+    `;
+    const workletUrl = URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }));
+    this._nativeWorkletUrl = workletUrl;
+    try {
+      if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
+        throw new Error("AudioWorklet is unavailable");
+      }
+      await context.audioWorklet.addModule(workletUrl);
+      const processor = new AudioWorkletNode(context, "videolink-native-capture", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+      });
+      this._nativeProcessor = processor;
+      processor.port.onmessage = (event) => this._handleNativePcm(event.data);
+      source.connect(processor);
+      processor.connect(gain);
+      gain.connect(context.destination);
+    } catch (error) {
+      this._nativeTalking = false;
+      await context.close().catch(() => undefined);
+      this._nativeContext = undefined;
+      this._nativeSource = undefined;
+      this._nativeGain = undefined;
+      throw error;
+    }
+  }
+
+  _handleNativePcm(data) {
+    if (!this._nativeTalking || !(data instanceof ArrayBuffer)) return;
+    const capturedAt = performance.now();
+    this._nativeFrameCount += 1;
+    this._diagnostics.nativeFrames = this._nativeFrameCount;
+    if (this._nativeLastCaptureAt !== undefined) {
+      this._diagnostics.nativeCallbackIntervalMs = capturedAt - this._nativeLastCaptureAt;
+    }
+    this._nativeLastCaptureAt = capturedAt;
+    if (this._nativePendingSends.size >= this._nativeQueueLimit) {
+      this._diagnostics.nativeQueueOverflow = true;
+      this._nativeTalking = false;
+      this._setStatus("Microphone transmission is falling behind. Release and try again.");
+      console.error("[Videolink] Native audio transport queue overflow");
+      this._stopNativeTalkCapture().catch((error) => {
+        console.error("[Videolink] Failed to stop native audio capture", error);
+      });
+      return;
+    }
+    const bytes = new Uint8Array(data);
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+    }
+    const encoded = btoa(binary);
+    const queuedAt = performance.now();
+    // Keep microphone frames ordered. The native DVI-4 encoder is stateful,
+    // so concurrent WebSocket commands can arrive out of order.
+    const request = this._nativeSendChain.then(async () => {
+      this._diagnostics.nativeQueueWaitMs = performance.now() - queuedAt;
+      const sentAt = performance.now();
+      await this._hass.callWS({
+        type: "videolink_doorbell/native_talk",
+        action: "audio",
+        entity_id: this._config.entity,
+        pcm: encoded,
+      });
+      this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
+    }).catch((error) => {
+      this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+    });
+    this._nativeSendChain = request;
+    this._nativePendingSends.add(request);
+    this._diagnostics.nativeQueueDepth = this._nativePendingSends.size;
+    request.then(
+      () => {
+        this._nativePendingSends.delete(request);
+        this._diagnostics.nativeQueueDepth = this._nativePendingSends.size;
+      },
+      () => {
+        this._nativePendingSends.delete(request);
+        this._diagnostics.nativeQueueDepth = this._nativePendingSends.size;
+      },
+    );
   }
 
   async _ensureNativeTalkSession() {
@@ -857,12 +950,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     await Promise.allSettled(this._nativePendingSends);
     this._nativePendingSends.clear();
     if (this._nativeContext) await this._nativeContext.close().catch(() => undefined);
+    if (this._nativeWorkletUrl) URL.revokeObjectURL(this._nativeWorkletUrl);
     this._nativeContext = undefined;
     this._nativeSource = undefined;
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
+    this._nativeWorkletUrl = undefined;
     this._nativeSendChain = Promise.resolve();
-    this._nativePcm = [];
+    this._diagnostics.nativeQueueDepth = 0;
   }
 
   async _stopNativeTalkSession() {
@@ -1019,6 +1114,24 @@ class VideolinkDoorbellCard extends HTMLElement {
       const codec = inbound && stats.get(inbound.codecId);
       const outboundCodec = outbound && stats.get(outbound.codecId);
       const packetsSent = outbound?.packetsSent || 0;
+      const statsNow = performance.now();
+      const previousSample = this._diagnosticStatsSample;
+      if (previousSample) {
+        const elapsedSeconds = (statsNow - previousSample.at) / 1000;
+        if (elapsedSeconds > 0) {
+          if (inbound?.packetsReceived != null) {
+            this._diagnostics.inboundPacketRate = (inbound.packetsReceived - previousSample.inbound) / elapsedSeconds;
+          }
+          if (outbound?.packetsSent != null) {
+            this._diagnostics.outboundPacketRate = (outbound.packetsSent - previousSample.outbound) / elapsedSeconds;
+          }
+        }
+      }
+      this._diagnosticStatsSample = {
+        at: statsNow,
+        inbound: inbound?.packetsReceived || 0,
+        outbound: outbound?.packetsSent || 0,
+      };
       if (this._diagnostics.trackAttachedAt !== undefined && this._diagnostics.firstOutboundPacketMs === undefined
           && packetsSent > (this._outboundPacketsAtAttach || 0)) {
         this._diagnostics.firstOutboundPacketMs = performance.now() - this._diagnostics.trackAttachedAt;
@@ -1030,6 +1143,10 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.jitterBufferMs = inbound?.jitterBufferEmittedCount
         ? inbound.jitterBufferDelay * 1000 / inbound.jitterBufferEmittedCount
         : undefined;
+      this._diagnostics.inboundConcealedSamples = inbound?.concealedSamples;
+      this._diagnostics.inboundSilentConcealedSamples = inbound?.silentConcealedSamples;
+      this._diagnostics.jitterBufferFlushes = inbound?.jitterBufferFlushes;
+      this._diagnostics.remoteOutboundLost = remoteInbound?.packetsLost;
       const transportRttMs = this._diagnostics.remoteInboundRttMs ?? this._diagnostics.rttMs;
       this._diagnostics.webrtcAudioBudgetMs = transportRttMs == null
         ? undefined
@@ -1071,8 +1188,14 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Estimated browser/WebRTC audio budget: ${ms(this._diagnostics.webrtcAudioBudgetMs)}`,
       `Inbound jitter: ${ms(this._diagnostics.inboundJitterMs)}`,
       `Inbound jitter buffer: ${ms(this._diagnostics.jitterBufferMs)}`,
+      `Inbound concealed samples: ${value(this._diagnostics.inboundConcealedSamples)}`,
+      `Inbound silent concealment: ${value(this._diagnostics.inboundSilentConcealedSamples)}`,
+      `Jitter buffer flushes: ${value(this._diagnostics.jitterBufferFlushes)}`,
       `Inbound audio: ${value(this._diagnostics.inboundPackets)} packets, ${value(this._diagnostics.inboundLost)} lost`,
       `Outbound audio: ${value(this._diagnostics.outboundPackets)} packets, ${value(this._diagnostics.outboundBytes)} bytes`,
+      `Inbound packet rate: ${value(this._diagnostics.inboundPacketRate)} packets/s`,
+      `Outbound packet rate: ${value(this._diagnostics.outboundPacketRate)} packets/s`,
+      `Remote outbound loss: ${value(this._diagnostics.remoteOutboundLost)}`,
       `Inbound codec: ${codec(this._diagnostics.codec, this._diagnostics.codecClockRate, this._diagnostics.codecChannels)}`,
       `Outbound codec/backchannel: ${codec(this._diagnostics.outboundCodec, this._diagnostics.outboundCodecClockRate, this._diagnostics.outboundCodecChannels)}`,
       `Mic permission: ${ms(this._diagnostics.micPermissionMs)}`,
@@ -1083,6 +1206,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Native audio frames: ${value(this._diagnostics.nativeFrames)}`,
       `Native capture interval: ${ms(this._diagnostics.nativeCallbackIntervalMs)}`,
       `Native queue wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
+      `Native queue depth: ${value(this._diagnostics.nativeQueueDepth)}`,
+      this._diagnostics.nativeQueueOverflow ? "Native queue overflow: yes" : "",
       `Native WebSocket ack: ${ms(this._diagnostics.nativeWsAckMs)}`,
       this._diagnostics.microphoneError ? `Microphone error: ${this._diagnostics.microphoneError}` : "",
       this._diagnostics.lifecycleError ? `Lifecycle error: ${this._diagnostics.lifecycleError}` : "",
