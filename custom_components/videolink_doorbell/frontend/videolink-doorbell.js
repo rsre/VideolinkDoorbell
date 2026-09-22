@@ -641,10 +641,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._updateTalkButton();
     try {
-      this._micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false,
-      });
+      this._micStream = await this._getMicrophoneStream();
       this._diagnostics.micPermissionMs = performance.now() - this._diagnostics.micRequestedAt;
       if (!this._talkRequested) {
         this._micStream.getTracks().forEach((track) => track.stop());
@@ -706,6 +703,27 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talkRequested = false;
     await this._stopMicrophone();
   };
+
+  async _getMicrophoneStream() {
+    const audio = {
+      echoCancellation: "remote-only",
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio, video: false });
+    } catch (error) {
+      // Older browsers only accept boolean echoCancellation values. Retry
+      // compatibility failures without prompting again for permission errors.
+      if (!["OverconstrainedError", "NotSupportedError", "TypeError"].includes(error?.name)) {
+        throw error;
+      }
+      return navigator.mediaDevices.getUserMedia({
+        audio: { ...audio, echoCancellation: true },
+        video: false,
+      });
+    }
+  }
 
   _safeBeginTalk = (event) => {
     this._runLifecycle("start talk", () => this._beginTalk(event));
