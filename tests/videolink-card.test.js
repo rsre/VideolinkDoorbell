@@ -37,6 +37,19 @@ test("the editor exposes the supported video modes", () => {
   ]);
 });
 
+test("talking mutes audio by default and exposes the override", () => {
+  const field = CardUnderTest.getConfigForm().schema.find(
+    ({ name }) => name === "mute_while_talking",
+  );
+  assert.equal(field.default, true);
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door" });
+  assert.equal(card._config.mute_while_talking, true);
+  card.setConfig({ entity: "camera.front_door", mute_while_talking: false });
+  assert.equal(card._config.mute_while_talking, false);
+});
+
 test("card style selects compact audio-only behavior", () => {
   const card = new CardUnderTest();
   card._render = () => undefined;

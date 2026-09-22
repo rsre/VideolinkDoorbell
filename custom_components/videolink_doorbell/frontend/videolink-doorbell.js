@@ -86,6 +86,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           { value: "rtsp", label: "RTSP" },
           { value: "native", label: "Native" },
         ] } } },
+        { name: "mute_while_talking", default: true, selector: { boolean: {} } },
         { name: "debug", selector: { boolean: {} } },
       ],
       computeLabel: (schema) => ({
@@ -95,6 +96,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         card_style: "Card style",
         enable_popup: "Enable video popup",
         talk_mode: "Talk mode",
+        mute_while_talking: "Mute while talking",
         debug: "Show stream diagnostics",
       })[schema.name],
     };
@@ -122,6 +124,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       card_style: cardStyle,
       enable_popup: false,
       talk_mode: talkMode,
+      mute_while_talking: true,
       debug: false,
       ...config,
       card_style: cardStyle,
@@ -624,9 +627,13 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnostics.trackAttachMs = undefined;
     this._diagnostics.firstOutboundPacketMs = undefined;
     if (event.pointerId != null) this._talkButton.setPointerCapture?.(event.pointerId);
-    if (this._config.talk_mode === "native") {
-      // Native talk has its own echo/mix path. Make inbound audio audible as
-      // soon as PTT starts, including while microphone setup is in progress.
+    if (
+      this._config.talk_mode === "native"
+      || !this._config.mute_while_talking
+    ) {
+      // Native talk has its own echo/mix path. For WebRTC, the explicit
+      // mute_while_talking option controls whether inbound audio remains
+      // audible, including while microphone setup is in progress.
       this._mutedBeforeTalk = this._muted;
       this._muted = false;
       if (this._video) this._video.muted = false;
@@ -676,7 +683,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       // audio audible while experimental native PTT is active. Preserve the
       // existing mute-while-transmitting behavior for WebRTC talkback.
       if (this._config.talk_mode !== "native") this._mutedBeforeTalk = this._muted;
-      if (this._config.talk_mode !== "native") {
+      if (this._config.talk_mode !== "native" && this._config.mute_while_talking) {
         this._muted = true;
         if (this._video) this._video.muted = true;
       }
