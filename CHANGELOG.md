@@ -2,6 +2,21 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.44] - 2026-09-23
+
+### Added
+
+- Added a repeatable native-talk acoustic benchmark with per-run recordings,
+  latency and tone-continuity reports, and Home Assistant local-account login.
+
+### Fixed
+
+- Bounded native talk audio buffering to prevent stale speech from playing late.
+- Fixed native mix playback and card session ownership and cleanup.
+- Made benchmark authentication work with system DNS when optional DNS packages
+  are incompatible, and report older integration versions clearly.
+- Aligned the integration version and card cache version with the release tag.
+
 ## [0.12.19] - 2026-09-19
 
 ### Added
