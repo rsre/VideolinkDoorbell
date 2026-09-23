@@ -2,6 +2,20 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.47] - 2026-09-24
+
+### Added
+
+- Show the selected incoming audio source, outgoing talk path, and mute state
+  in the card's debug diagnostics.
+
+## [0.12.46] - 2026-09-24
+
+### Fixed
+
+- Kept FLV/WebRTC camera audio audible in native-talk mode when an inbound
+  WebRTC audio track is present; native mix playback remains the fallback.
+
 ## [0.12.45] - 2026-09-23
 
 ### Fixed

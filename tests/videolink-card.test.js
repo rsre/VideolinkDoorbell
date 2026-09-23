@@ -91,6 +91,60 @@ test("native mix playback mutes WebRTC audio and follows the sound control", () 
   assert.equal(card._nativePlaybackGain.gain.value, 0);
 });
 
+test("native talk keeps a working FLV WebRTC audio track audible", () => {
+  const card = new CardUnderTest();
+  card._video = { muted: true, play: () => Promise.resolve() };
+  card._nativeMixAvailable = true;
+  card._remoteStream = { getAudioTracks: () => [{ readyState: "live" }] };
+  card._muted = false;
+  card._updateNativeAudioRoute();
+  assert.equal(card._nativeUsesMix, false);
+  assert.equal(card._video.muted, false);
+});
+
+test("native mix is used only until a WebRTC audio track arrives", () => {
+  const card = new CardUnderTest();
+  card._video = { muted: false };
+  card._nativeMixAvailable = true;
+  card._remoteStream = { getAudioTracks: () => [] };
+  card._muted = false;
+  card._updateNativeAudioRoute();
+  assert.equal(card._nativeUsesMix, true);
+  assert.equal(card._video.muted, true);
+  card._remoteStream = { getAudioTracks: () => [{ readyState: "live" }] };
+  card._updateNativeAudioRoute();
+  assert.equal(card._nativeUsesMix, false);
+  assert.equal(card._video.muted, false);
+});
+
+test("debug view identifies the selected audio source and talkback path", () => {
+  const card = new CardUnderTest();
+  card._config = { talk_mode: "native" };
+  card._diagnosticsOutput = { textContent: "" };
+  card._nativeMixAvailable = true;
+  card._remoteStream = { getAudioTracks: () => [{ readyState: "live" }] };
+  card._muted = false;
+  card._updateNativeAudioRoute();
+  assert.match(card._diagnosticsOutput.textContent, /Incoming audio source: WebRTC camera track/);
+  assert.match(card._diagnosticsOutput.textContent, /Outgoing talk path: Native Baichuan/);
+  assert.match(card._diagnosticsOutput.textContent, /Audio output: unmuted/);
+
+  card._remoteStream = { getAudioTracks: () => [] };
+  card._updateNativeAudioRoute();
+  assert.match(card._diagnosticsOutput.textContent, /Incoming audio source: Native mix \(Baichuan\)/);
+
+  card._nativeMixAvailable = false;
+  card._config.talk_mode = "rtsp";
+  card._muted = true;
+  card._updateNativeAudioRoute();
+  assert.match(card._diagnosticsOutput.textContent, /Incoming audio source: none \(waiting for audio track\)/);
+  assert.match(card._diagnosticsOutput.textContent, /Outgoing talk path: WebRTC \/ RTSP backchannel/);
+  assert.match(card._diagnosticsOutput.textContent, /Audio output: muted/);
+  card._video = { muted: true, play: () => Promise.resolve() };
+  card._toggleSound();
+  assert.match(card._diagnosticsOutput.textContent, /Audio output: unmuted/);
+});
+
 test("native card explicitly claims its talk session", async () => {
   const card = new CardUnderTest();
   card._render = () => undefined;

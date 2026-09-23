@@ -50,8 +50,9 @@ When PTT is pressed:
 - The backend keeps at most four pending frames and drops stale frames so speech
   cannot build up seconds of delay during a network slowdown.
 - The backend sends frames through one native TCP session owned by this card.
-- When the camera supplies a native mix stream, play it and mute the duplicate
-  WebRTC audio. Otherwise, use the WebRTC audio stream.
+- Prefer an available WebRTC inbound audio track, including FLV camera audio.
+  Use the native mix stream only when WebRTC supplies no audio track, so the
+  mix path does not mute an otherwise working camera feed.
 
 When PTT is released:
 

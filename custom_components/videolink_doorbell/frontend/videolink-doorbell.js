@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.45";
+const CARD_VERSION = "0.12.47";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -31,6 +31,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSessionReady = false;
     this._nativeSessionStarting = undefined;
     this._nativeToken = undefined;
+    this._nativeMixAvailable = false;
     this._nativeUsesMix = false;
     this._nativePcm = [];
     this._nativePendingSends = new Set();
@@ -317,10 +318,29 @@ class VideolinkDoorbellCard extends HTMLElement {
         this._video.muted = true;
         if (this._nativePlaybackGain) this._nativePlaybackGain.gain.value = 0;
         this._updateSoundButton();
+        this._updateDiagnosticsView();
         this._setStatus("Tap the speaker button to enable audio");
         this._video.play().catch(() => undefined);
       }
     });
+  }
+
+  _updateNativeAudioRoute() {
+    // Prefer the audio track already synchronized with the FLV/WebRTC video.
+    // Native mix remains a fallback when WebRTC supplies no audio track.
+    const hasWebRtcAudio = this._remoteStream?.getAudioTracks()
+      .some((track) => track.readyState !== "ended");
+    this._nativeUsesMix = this._nativeMixAvailable && !hasWebRtcAudio;
+    if (this._video) this._video.muted = this._muted || this._nativeUsesMix;
+    this._updateDiagnosticsView();
+  }
+
+  _incomingAudioSource() {
+    if (this._nativeUsesMix) return "Native mix (Baichuan)";
+    if (this._remoteStream?.getAudioTracks().some((track) => track.readyState !== "ended")) {
+      return "WebRTC camera track";
+    }
+    return "none (waiting for audio track)";
   }
 
   _updateTitle() {
@@ -405,6 +425,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       peer.ontrack = (event) => {
         if (!this._isCurrentConnection(generation) || this._peer !== peer) return;
         this._remoteStream.addTrack(event.track);
+        if (event.track.kind === "audio") this._updateNativeAudioRoute();
         this._attachRemoteStream();
       };
       peer.onicecandidate = (event) => {
@@ -809,6 +830,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._soundButton) this._soundButton.disabled = false;
     this._updateSoundButton();
     this._updateTalkButton();
+    this._updateDiagnosticsView();
     this._micStream = undefined;
     if (sender && this._config?.talk_mode !== "native") {
       // Stop sending the RTSP backchannel when PTT ends. The WebRTC session
@@ -962,8 +984,8 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._nativeToken = config.token;
       this._nativeSampleRate = Number(config?.sample_rate) || 16000;
       this._nativeFrameSamples = Number(config?.samples_per_frame) || 1024;
-      this._nativeUsesMix = config.audio_stream_mode === "mixAudioStream";
-      if (this._video) this._video.muted = this._muted || this._nativeUsesMix;
+      this._nativeMixAvailable = config.audio_stream_mode === "mixAudioStream";
+      this._updateNativeAudioRoute();
       try {
         this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
           (message) => this._playNativeMix(message),
@@ -983,6 +1005,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           token: this._nativeToken,
         }).catch(() => undefined);
         this._nativeToken = undefined;
+        this._nativeMixAvailable = false;
         this._nativeUsesMix = false;
         if (this._video) this._video.muted = this._muted;
         throw error;
@@ -1046,8 +1069,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackChain = Promise.resolve();
     this._nativeSessionReady = false;
     this._nativeToken = undefined;
+    this._nativeMixAvailable = false;
     this._nativeUsesMix = false;
     if (this._video) this._video.muted = this._muted;
+    this._updateDiagnosticsView();
   }
 
   _playNativeMix(message) {
@@ -1115,6 +1140,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._video.play().catch(() => undefined);
     this._updateSoundButton();
+    this._updateDiagnosticsView();
   };
 
   _updateSoundButton() {
@@ -1252,6 +1278,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     };
     this._diagnosticsOutput.textContent = [
       `Phase: ${this._diagnostics.phase || "idle"}`,
+      `Incoming audio source: ${this._incomingAudioSource()}`,
+      `Outgoing talk path: ${this._config?.talk_mode === "native" ? "Native Baichuan" : "WebRTC / RTSP backchannel"}`,
+      `Audio output: ${this._muted ? "muted" : "unmuted"}`,
       `WebRTC connect: ${ms(this._diagnostics.connectMs)}`,
       `WebRTC RTT: ${ms(this._diagnostics.rttMs)}`,
       `Remote inbound RTT: ${ms(this._diagnostics.remoteInboundRttMs)}`,
