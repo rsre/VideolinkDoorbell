@@ -214,3 +214,81 @@ async def test_native_talk_channel_owns_session_lifecycle(monkeypatch) -> None:
     assert FakeTransport.instances[0].sent == [b"frame"]
     assert FakeTransport.instances[0].closed is True
     assert channel.active is False
+
+
+@pytest.mark.asyncio
+async def test_native_audio_queue_keeps_recent_frames(monkeypatch) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowTransport:
+        def __init__(self, *args, **kwargs):
+            self.sent = []
+
+        async def login(self):
+            pass
+
+        async def talk_ability(self):
+            return native_talk.TalkAbility()
+
+        async def open_talk(self, config):
+            pass
+
+        async def send_pcm(self, pcm):
+            started.set()
+            await release.wait()
+            self.sent.append(pcm)
+
+        async def stop_talk(self):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", SlowTransport)
+    channel = native_talk.NativeTalkChannel("camera", "user", "secret")
+    channel.MAX_AUDIO_AGE_SECONDS = 5
+    await channel.start()
+    transport = channel.transport
+    completions = [await channel.enqueue_pcm(b"0")]
+    await started.wait()
+    for index in range(1, 6):
+        completions.append(await channel.enqueue_pcm(str(index).encode()))
+    release.set()
+    await asyncio.gather(*completions)
+    await channel.stop()
+    assert transport.sent == [b"0", b"2", b"3", b"4", b"5"]
+
+
+@pytest.mark.asyncio
+async def test_native_audio_queue_discards_stale_frame(monkeypatch) -> None:
+    class Transport:
+        def __init__(self, *args, **kwargs):
+            self.sent = []
+
+        async def login(self):
+            pass
+
+        async def talk_ability(self):
+            return native_talk.TalkAbility()
+
+        async def open_talk(self, config):
+            pass
+
+        async def send_pcm(self, pcm):
+            self.sent.append(pcm)
+
+        async def stop_talk(self):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", Transport)
+    channel = native_talk.NativeTalkChannel("camera", "user", "secret")
+    await channel.start()
+    transport = channel.transport
+    channel.MAX_AUDIO_AGE_SECONDS = -1
+    await channel.send_pcm(b"old")
+    await channel.stop()
+    assert transport.sent == []

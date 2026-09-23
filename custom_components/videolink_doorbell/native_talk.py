@@ -979,7 +979,8 @@ class NativeTalkSession:
 class NativeTalkChannel:
     """High-level native-talk session with negotiated audio and lifecycle state."""
 
-    AUDIO_QUEUE_MAXSIZE = 32
+    AUDIO_QUEUE_MAXSIZE = 4
+    MAX_AUDIO_AGE_SECONDS = 0.25
 
     def __init__(
         self,
@@ -997,7 +998,7 @@ class NativeTalkChannel:
         self.mix_frame_callback = mix_frame_callback
         self.transport: NativeTalkSession | None = None
         self.talk_config: TalkConfig | None = None
-        self._audio_queue: asyncio.Queue[tuple[bytes, asyncio.Future[None]]] | None = None
+        self._audio_queue: asyncio.Queue[tuple[bytes, float, asyncio.Future[None]]] | None = None
         self._audio_worker: asyncio.Task[None] | None = None
         self._audio_error: Exception | None = None
         self._lifecycle_lock = asyncio.Lock()
@@ -1043,9 +1044,12 @@ class NativeTalkChannel:
         while True:
             if self._audio_queue is None:
                 return
-            pcm16le, completion = await self._audio_queue.get()
+            pcm16le, queued_at, completion = await self._audio_queue.get()
             try:
-                if self.transport is not None:
+                if time.monotonic() - queued_at > self.MAX_AUDIO_AGE_SECONDS:
+                    # Playing old speech is worse than losing a frame in a live call.
+                    pass
+                elif self.transport is not None:
                     await self.transport.send_pcm(pcm16le)
                 if not completion.done():
                     completion.set_result(None)
@@ -1055,7 +1059,7 @@ class NativeTalkChannel:
                     completion.set_exception(err)
                 while True:
                     try:
-                        _, pending = self._audio_queue.get_nowait()
+                        _, _, pending = self._audio_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
                     if not pending.done():
@@ -1085,7 +1089,12 @@ class NativeTalkChannel:
             if self._audio_queue is None:
                 raise RuntimeError("native talk session is not active after restart")
         completion = asyncio.get_running_loop().create_future()
-        await self._audio_queue.put((pcm16le, completion))
+        if self._audio_queue.full():
+            _, _, dropped = self._audio_queue.get_nowait()
+            if not dropped.done():
+                dropped.set_result(None)
+            self._audio_queue.task_done()
+        self._audio_queue.put_nowait((pcm16le, time.monotonic(), completion))
         return completion
 
     async def restart(self) -> None:
