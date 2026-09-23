@@ -127,6 +127,7 @@ async def test_native_talk_owner_prevents_other_cards_from_stopping_session(monk
             self.talk_config = object()
             self.failed = False
             self.stopped = False
+            self.channel = kwargs["channel"]
 
         async def start(self):
             pass
@@ -147,3 +148,37 @@ async def test_native_talk_owner_prevents_other_cards_from_stopping_session(monk
     with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
         await client.native_talk_start(0, owner="card-one", require_owner=True)
     assert client._native_talk is None
+
+
+@pytest.mark.asyncio
+async def test_new_card_claim_replaces_previous_native_talk_owner(monkeypatch) -> None:
+    class Channel:
+        def __init__(self, *args, **kwargs):
+            self.talk_config = object()
+            self.failed = False
+            self.stopped = False
+            self.channel = kwargs["channel"]
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(api, "NativeTalkChannel", Channel)
+    client = api.VideolinkClient(object(), "camera.local", "user", "password")
+    await client.native_talk_start(0, owner="old-card")
+    old_channel = client._native_talk
+
+    await client.native_talk_start(0, owner="new-card", take_over=True)
+    new_channel = client._native_talk
+    assert old_channel.stopped is True
+    assert new_channel is not old_channel
+    assert client._native_talk_owner == "new-card"
+
+    with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
+        await client.native_talk_audio(b"frame", owner="old-card")
+    await client.native_talk_stop(owner="old-card")
+    assert new_channel.stopped is False
+    await client.native_talk_stop(owner="new-card")
+    assert new_channel.stopped is True

@@ -32,6 +32,7 @@ def async_register(hass: HomeAssistant) -> None:
         vol.Required("entity_id"): cv.entity_id,
         vol.Optional("pcm"): str,
         vol.Optional("token"): str,
+        vol.Optional("claim", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -52,7 +53,9 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         if action == "start":
             token = secrets.token_urlsafe(24)
             config = await client.native_talk_start(
-                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL), owner=token
+                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
+                owner=token,
+                take_over=msg.get("claim", False),
             )
             result = {
                 "ok": True,

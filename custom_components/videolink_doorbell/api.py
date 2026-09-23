@@ -318,6 +318,7 @@ class VideolinkClient:
         *,
         owner: str | None = None,
         require_owner: bool = False,
+        take_over: bool = False,
         mix_frame_callback=None,
     ):
         """Open and configure the experimental native Baichuan talk path."""
@@ -325,7 +326,18 @@ class VideolinkClient:
             if require_owner and (owner is None or self._native_talk_owner != owner):
                 raise VideolinkConnectionError("Native talk session is no longer active")
             if self._native_talk_owner is not None and self._native_talk_owner != owner:
-                raise VideolinkError("Native talk is already in use by another card")
+                if not take_over or owner is None:
+                    raise VideolinkError("Native talk is already in use by another card")
+                previous = self._native_talk
+                try:
+                    if previous is not None:
+                        await previous.stop()
+                except Exception:
+                    # A broken old channel must not prevent a new owner from trying.
+                    pass
+                finally:
+                    self._native_talk = None
+                    self._native_talk_owner = None
             if self._native_talk is None:
                 self._native_talk = NativeTalkChannel(
                     self.host,
@@ -357,11 +369,14 @@ class VideolinkClient:
         await self.native_talk_start(
             self._native_talk.channel, owner=owner, require_owner=owner is not None
         )
+        channel = self._native_talk
+        if channel is None:
+            raise VideolinkConnectionError("Native talk session is not active")
         try:
             if wait:
-                await self._native_talk.send_pcm(pcm16le)
+                await channel.send_pcm(pcm16le)
             else:
-                completion = await self._native_talk.enqueue_pcm(pcm16le)
+                completion = await channel.enqueue_pcm(pcm16le)
                 # The WebSocket command acknowledges enqueueing, not camera
                 # playback. Consume a later worker exception so asyncio does
                 # not report an unhandled Future exception.
@@ -378,7 +393,8 @@ class VideolinkClient:
         )
         if self._native_talk is None or self._native_talk.talk_config is None:
             raise VideolinkConnectionError("Native talk session is not active")
-        config = self._native_talk.talk_config
+        channel = self._native_talk
+        config = channel.talk_config
         total_samples = int(seconds * config.sample_rate)
         frame_size = config.length_per_encoder
         samples = [
@@ -393,7 +409,7 @@ class VideolinkClient:
                 f"<{frame_size}h", *samples[offset : offset + frame_size]
             )
             await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
-            await self._native_talk.send_pcm(pcm)
+            await channel.send_pcm(pcm)
             deadline += frame_size / config.sample_rate
         # Native playback is buffered in the camera. Keep the session alive
         # after the final frame so the caller cannot stop it before the queued

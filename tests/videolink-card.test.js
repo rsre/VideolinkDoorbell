@@ -90,3 +90,21 @@ test("native mix playback mutes WebRTC audio and follows the sound control", () 
   card._toggleSound();
   assert.equal(card._nativePlaybackGain.gain.value, 0);
 });
+
+test("native card explicitly claims its talk session", async () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door", talk_mode: "native" });
+  const messages = [];
+  card._hass = {
+    callWS: async (message) => {
+      messages.push(message);
+      return { token: "new-owner", sample_rate: 16000, samples_per_frame: 1024 };
+    },
+    connection: { subscribeMessage: async () => () => undefined },
+  };
+  await card._ensureNativeTalkSession();
+  assert.equal(messages[0].action, "start");
+  assert.equal(messages[0].claim, true);
+  assert.equal(card._nativeToken, "new-owner");
+});

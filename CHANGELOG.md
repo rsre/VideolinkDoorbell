@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.45] - 2026-09-23
+
+### Fixed
+
+- Let a newly started native-talk card claim the camera session from an older
+  card or benchmark, while rejecting late audio and stop requests from the
+  previous owner.
+
 ## [0.12.44] - 2026-09-23
 
 ### Added

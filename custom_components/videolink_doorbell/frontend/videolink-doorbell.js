@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.44";
+const CARD_VERSION = "0.12.45";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -957,6 +957,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         type: "videolink_doorbell/native_talk",
         action: "start",
         entity_id: this._config.entity,
+        claim: true,
       });
       this._nativeToken = config.token;
       this._nativeSampleRate = Number(config?.sample_rate) || 16000;
