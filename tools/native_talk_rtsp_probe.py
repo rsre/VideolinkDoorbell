@@ -89,7 +89,10 @@ class RtspAudioCapture:
         self.first_audio_at: float | None = None
         self.tone_sent_at: float | None = None
         self.tone_detected_at: float | None = None
+        self.background_tone_detected_at: float | None = None
         self._tone_candidate_frames = 0
+        self._background_tone_candidate_frames = 0
+        self.tone_presence_flags: list[bool] = []
         self._buffer = bytearray()
 
     async def start(self) -> None:
@@ -147,8 +150,17 @@ class RtspAudioCapture:
                     self.first_audio_at = now
                     print(f"{self.source_kind.upper()} audio received")
                 self.samples_seen += DETECT_FRAME_SAMPLES
-                if self.tone_detected_at is None and self.tone_sent_at is not None:
+                if self.tone_sent_at is None:
                     if _detect_tone(frame):
+                        self._background_tone_candidate_frames += 1
+                    else:
+                        self._background_tone_candidate_frames = 0
+                    if self._background_tone_candidate_frames >= 2:
+                        self.background_tone_detected_at = now
+                elif self.tone_detected_at is None:
+                    tone_present = _detect_tone(frame)
+                    self.tone_presence_flags.append(tone_present)
+                    if tone_present:
                         self._tone_candidate_frames += 1
                     else:
                         self._tone_candidate_frames = 0
@@ -158,6 +170,8 @@ class RtspAudioCapture:
                             f"440 Hz tone detected at {self.source_kind.upper()} "
                             f"sample {self.samples_seen}"
                         )
+                else:
+                    self.tone_presence_flags.append(_detect_tone(frame))
 
     async def close(self) -> None:
         if self.process is not None and self.process.returncode is None:

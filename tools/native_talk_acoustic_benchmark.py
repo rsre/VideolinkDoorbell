@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""Record repeatable HA native-tone to doorbell-microphone observations."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from datetime import datetime, timezone
+import getpass
+import json
+import os
+from pathlib import Path
+import statistics
+import sys
+import time
+from urllib.parse import quote, urlsplit, urlunsplit
+
+from aiohttp import ClientSession, ClientTimeout, TCPConnector, ThreadedResolver
+
+from native_talk_rtsp_probe import DETECT_FRAME_SAMPLES, SAMPLE_RATE, RtspAudioCapture
+
+
+TONE_SECONDS = 2.0  # The integration's native tone command sends a two-second tone.
+
+
+class HomeAssistantNativeTone:
+    """Use the same native WebSocket commands as the dashboard card."""
+
+    def __init__(
+        self, base_url: str, access_token: str | None, entity_id: str,
+        *, username: str | None = None, password: str | None = None,
+    ) -> None:
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("--ha-url must be an http(s) Home Assistant URL")
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        self.base_url = base_url.rstrip("/")
+        self.url = urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/") + "/api/websocket", "", ""))
+        self.access_token = access_token
+        self.username = username
+        self.password = password
+        self.refresh_token: str | None = None
+        self.entity_id = entity_id
+        self.socket = None
+        self.command_id = 0
+        self.session_token: str | None = None
+        self._legacy_session_started = False
+        self.subscription_id: int | None = None
+        self._pending: dict[int, asyncio.Future[dict]] = {}
+        self._reader_task: asyncio.Task | None = None
+
+    async def connect(self) -> None:
+        try:
+            import websockets
+        except ImportError as err:
+            raise RuntimeError("Install websockets to run this benchmark") from err
+        if not self.access_token:
+            try:
+                self.access_token, self.refresh_token = await self._login_with_password()
+            finally:
+                self.password = None
+        self.socket = await websockets.connect(self.url, open_timeout=10)
+        greeting = json.loads(await asyncio.wait_for(self.socket.recv(), 10))
+        if greeting.get("type") != "auth_required":
+            raise RuntimeError("Home Assistant did not request WebSocket authentication")
+        await self.socket.send(json.dumps({"type": "auth", "access_token": self.access_token}))
+        response = json.loads(await asyncio.wait_for(self.socket.recv(), 10))
+        if response.get("type") != "auth_ok":
+            raise RuntimeError("Home Assistant rejected the access token")
+
+    async def _login_with_password(self) -> tuple[str, str]:
+        """Exchange local-account credentials through Home Assistant's auth flow."""
+        if not self.username or not self.password:
+            raise ValueError("Home Assistant username and password are required")
+        client_id = self.base_url + "/"
+        timeout = ClientTimeout(total=15)
+        # The system resolver also supports local/mDNS Home Assistant hostnames.
+        # It avoids optional aiodns/pycares version mismatches during login.
+        async with ClientSession(
+            timeout=timeout, connector=TCPConnector(resolver=ThreadedResolver())
+        ) as session:
+            async with session.post(
+                f"{self.base_url}/auth/login_flow",
+                json={
+                    "handler": ["homeassistant", None],
+                    "client_id": client_id,
+                    "redirect_uri": client_id,
+                },
+            ) as response:
+                response.raise_for_status()
+                flow = await response.json()
+            flow_id = flow.get("flow_id")
+            if flow.get("type") != "form" or not isinstance(flow_id, str):
+                raise RuntimeError("Home Assistant local-account login is unavailable")
+            async with session.post(
+                f"{self.base_url}/auth/login_flow/{flow_id}",
+                json={
+                    "client_id": client_id,
+                    "username": self.username,
+                    "password": self.password,
+                },
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+            code = result.get("result")
+            if result.get("type") != "create_entry" or not isinstance(code, str):
+                raise RuntimeError(
+                    "Home Assistant login needs another step or rejected the credentials; "
+                    "use VIDEOLINK_HA_TOKEN for MFA or another auth provider"
+                )
+            async with session.post(
+                f"{self.base_url}/auth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": client_id,
+                },
+            ) as response:
+                response.raise_for_status()
+                tokens = await response.json()
+        access = tokens.get("access_token")
+        refresh = tokens.get("refresh_token")
+        if not isinstance(access, str) or not isinstance(refresh, str):
+            raise RuntimeError("Home Assistant did not return usable login tokens")
+        return access, refresh
+
+    async def _revoke_refresh_token(self) -> None:
+        if not self.refresh_token:
+            return
+        token, self.refresh_token = self.refresh_token, None
+        try:
+            async with ClientSession(
+                timeout=ClientTimeout(total=10),
+                connector=TCPConnector(resolver=ThreadedResolver()),
+            ) as session:
+                async with session.post(
+                    f"{self.base_url}/auth/revoke", data={"token": token}
+                ) as response:
+                    response.raise_for_status()
+        except Exception:
+            print("Warning: could not revoke the temporary Home Assistant login", file=sys.stderr)
+
+    async def _read_messages(self) -> None:
+        """Drain native mix events continuously and route command replies."""
+        try:
+            while True:
+                response = json.loads(await self.socket.recv())
+                if response.get("type") == "event":
+                    continue
+                future = self._pending.pop(response.get("id"), None)
+                if future is not None and not future.done():
+                    future.set_result(response)
+        except Exception as err:
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(err)
+            self._pending.clear()
+
+    async def command(
+        self, action: str, *, timeout: float = 15, on_send=None,
+        allow_missing_token: bool = False,
+    ) -> tuple[int, dict]:
+        if self.socket is None:
+            raise RuntimeError("Home Assistant WebSocket is not connected")
+        if action != "start" and not self.session_token and not allow_missing_token:
+            raise RuntimeError("Native talk session is not started")
+        if self._reader_task is not None and self._reader_task.done():
+            raise RuntimeError("Home Assistant WebSocket reader has stopped")
+        if self._reader_task is None:
+            self._reader_task = asyncio.create_task(self._read_messages())
+        self.command_id += 1
+        command_id = self.command_id
+        response_future = asyncio.get_running_loop().create_future()
+        self._pending[command_id] = response_future
+        message = {
+            "id": command_id,
+            "type": "videolink_doorbell/native_talk",
+            "action": action,
+            "entity_id": self.entity_id,
+        }
+        if action != "start":
+            if self.session_token:
+                message["token"] = self.session_token
+        try:
+            if on_send is not None:
+                on_send(time.monotonic())
+            await self.socket.send(json.dumps(message))
+            response = await asyncio.wait_for(response_future, timeout)
+            if not response.get("success"):
+                raise RuntimeError(f"Home Assistant {action} failed: {response.get('error')}")
+            return command_id, response.get("result") or {}
+        finally:
+            self._pending.pop(command_id, None)
+
+    async def start(self) -> dict:
+        _, result = await self.command("start")
+        token = result.get("token")
+        if not isinstance(token, str) or not token:
+            self._legacy_session_started = True
+            raise RuntimeError(
+                "Home Assistant's installed Videolink integration returned a native-talk "
+                "start response without a session token. It appears older than this "
+                "benchmark; update custom_components/videolink_doorbell in Home Assistant "
+                "and restart Home Assistant before retrying"
+            )
+        self.session_token = token
+        self.subscription_id, _ = await self.command("subscribe")
+        return result
+
+    async def close(self) -> None:
+        try:
+            if self.socket is not None and (self.session_token or self._legacy_session_started):
+                await self.command(
+                    "stop", timeout=8, allow_missing_token=self._legacy_session_started
+                )
+        except Exception:
+            pass
+        finally:
+            try:
+                if self.socket is not None:
+                    await self.socket.close()
+            finally:
+                if self._reader_task is not None:
+                    self._reader_task.cancel()
+                    await asyncio.gather(self._reader_task, return_exceptions=True)
+                    self._reader_task = None
+                self.socket = None
+                self.session_token = None
+                self._legacy_session_started = False
+                self.access_token = None
+                await self._revoke_refresh_token()
+
+
+async def _wait_for_camera_audio(capture: RtspAudioCapture, task: asyncio.Task, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while capture.first_audio_at is None:
+        if task.done():
+            raise RuntimeError("RTSP audio ended before producing decoded samples")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("No decoded RTSP audio received from the doorbell")
+        await asyncio.sleep(0.05)
+
+
+def summarize(runs: list[dict]) -> dict:
+    latencies = [run["latency_ms"] for run in runs if run["latency_ms"] is not None]
+    summary = {"detected": len(latencies), "runs": len(runs)}
+    if latencies:
+        summary.update({
+            "mean_ms": round(statistics.mean(latencies), 1),
+            "median_ms": round(statistics.median(latencies), 1),
+            "min_ms": round(min(latencies), 1),
+            "max_ms": round(max(latencies), 1),
+            "first_ms": runs[0]["latency_ms"],
+            "subsequent_mean_ms": round(statistics.mean(
+                run["latency_ms"] for run in runs[1:] if run["latency_ms"] is not None
+            ), 1) if any(run["latency_ms"] is not None for run in runs[1:]) else None,
+        })
+    return summary
+
+
+def tone_continuity(flags: list[bool], tone_seconds: float) -> dict | None:
+    """Estimate how continuously the recorded two-second tone survives."""
+    first = next(
+        (index for index in range(1, len(flags)) if flags[index - 1] and flags[index]),
+        None,
+    )
+    if first is None:
+        return None
+    frame_ms = DETECT_FRAME_SAMPLES / SAMPLE_RATE * 1000
+    expected = round(tone_seconds * 1000 / frame_ms)
+    window = flags[first - 1:first - 1 + expected]
+    longest_gap = gap = 0
+    for present in window:
+        gap = 0 if present else gap + 1
+        longest_gap = max(longest_gap, gap)
+    return {
+        "tone_presence_percent": round(100 * sum(window) / len(window), 1),
+        "longest_tone_gap_ms": round(longest_gap * frame_ms, 1),
+        "evaluated_ms": round(len(window) * frame_ms, 1),
+    }
+
+
+async def _run_trial(
+    client: HomeAssistantNativeTone, url: str, output_dir: Path, run_number: int,
+    observe_seconds: float,
+) -> dict:
+    recording = output_dir / f"run-{run_number:02d}.wav"
+    capture = RtspAudioCapture(url, record=str(recording))
+    stop = asyncio.Event()
+    task: asyncio.Task | None = None
+    result = {
+        "run": run_number,
+        "recording": recording.name,
+        "latency_ms": None,
+        "status": "not_detected",
+        "rtsp_audio_received": False,
+    }
+    try:
+        await capture.start()
+        task = asyncio.create_task(capture.run(stop))
+        await _wait_for_camera_audio(capture, task, 10)
+        result["rtsp_audio_received"] = True
+        await asyncio.sleep(0.5)  # Check for an existing 440 Hz tone before sending.
+        if capture.background_tone_detected_at is not None:
+            result["status"] = "background_tone"
+            return result
+        await client.command("tone", timeout=TONE_SECONDS + 10,
+                             on_send=lambda timestamp: setattr(capture, "tone_sent_at", timestamp))
+        deadline = capture.tone_sent_at + TONE_SECONDS + observe_seconds
+        while capture.tone_detected_at is None and time.monotonic() < deadline and not task.done():
+            await asyncio.sleep(0.05)
+        if capture.tone_detected_at is not None:
+            result["latency_ms"] = round(
+                (capture.tone_detected_at - capture.tone_sent_at) * 1000, 1
+            )
+            result.update(tone_continuity(capture.tone_presence_flags, TONE_SECONDS) or {})
+            result["status"] = "detected"
+        elif task.done():
+            result["status"] = "rtsp_ended"
+    except Exception as err:
+        result["status"] = "error"
+        result["error"] = f"{type(err).__name__}: {err}"
+    finally:
+        stop.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        await capture.close()
+    return result
+
+
+async def benchmark(args: argparse.Namespace) -> int:
+    access_token = os.environ.get("VIDEOLINK_HA_TOKEN")
+    ha_username = args.ha_username or os.environ.get("VIDEOLINK_HA_USERNAME")
+    ha_password = os.environ.get("VIDEOLINK_HA_PASSWORD")
+    if not access_token:
+        if not ha_username:
+            raise RuntimeError("Set VIDEOLINK_HA_USERNAME, or set VIDEOLINK_HA_TOKEN")
+        ha_password = ha_password or getpass.getpass("Home Assistant password: ")
+    username = args.username or os.environ.get("VIDEOLINK_USERNAME", "admin")
+    password = os.environ.get("VIDEOLINK_PASSWORD") or getpass.getpass("Doorbell password: ")
+    user = quote(username, safe="")
+    secret = quote(password, safe="")
+    host = f"[{args.host}]" if ":" in args.host and not args.host.startswith("[") else args.host
+    stream_path = f"h264Preview_{args.channel + 1:02d}_{args.stream}"
+    rtsp_url = f"rtsp://{user}:{secret}@{host}:{args.rtsp_port}/{stream_path}"
+    if args.output_dir.exists():
+        raise FileExistsError(f"Output directory already exists: {args.output_dir}")
+    client = HomeAssistantNativeTone(
+        args.ha_url, access_token, args.entity_id,
+        username=ha_username, password=ha_password,
+    )
+    runs: list[dict] = []
+    profile = None
+    try:
+        await client.connect()
+        profile = await client.start()
+        args.output_dir.mkdir(parents=True, exist_ok=False)
+        for run_number in range(1, args.runs + 1):
+            result = await _run_trial(client, rtsp_url, args.output_dir, run_number, args.observe)
+            runs.append(result)
+            latency = result["latency_ms"]
+            print(f"run {run_number}: {result['status']}" + (f" ({latency:.1f} ms)" if latency is not None else ""))
+            if run_number < args.runs:
+                await asyncio.sleep(0.5)
+    finally:
+        await client.close()
+    summary = summarize(runs)
+    report = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "measurement": "HA tone request to confirmed 440 Hz in doorbell RTSP microphone audio",
+        "limitations": "Includes WebSocket, native send, speaker, microphone, RTSP, and FFmpeg delay; excludes browser microphone capture.",
+        "entity_id": args.entity_id,
+        "tone_seconds": TONE_SECONDS,
+        "observe_seconds": args.observe,
+        "native_profile": {
+            "sample_rate": profile.get("sample_rate"),
+            "samples_per_frame": profile.get("samples_per_frame"),
+            "audio_stream_mode": profile.get("audio_stream_mode"),
+        },
+        "runs": runs,
+        "summary": summary,
+    }
+    (args.output_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"detected {summary['detected']}/{summary['runs']}; report: {args.output_dir / 'report.json'}")
+    return 0 if summary["detected"] == args.runs else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ha-url", required=True, help="Home Assistant base URL")
+    parser.add_argument("--ha-username", help="Home Assistant local-account username")
+    parser.add_argument("--entity-id", required=True, help="Videolink camera entity ID")
+    parser.add_argument("--host", required=True, help="doorbell IP address or hostname")
+    parser.add_argument("--username", help="doorbell username (default: VIDEOLINK_USERNAME or admin)")
+    parser.add_argument("--channel", type=int, default=0)
+    parser.add_argument("--stream", choices=("main", "sub"), default="main")
+    parser.add_argument("--rtsp-port", type=int, default=554)
+    parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--observe", type=float, default=4.0,
+                        help="seconds to observe after the 2-second tone starts")
+    parser.add_argument("--output-dir", type=Path, required=True,
+                        help="new directory for per-run WAV recordings and report.json")
+    args = parser.parse_args()
+    if args.runs < 1 or args.channel < 0 or args.observe <= 0 or not 1 <= args.rtsp_port <= 65535:
+        parser.error("runs must be positive, channel nonnegative, observe positive, and RTSP port valid")
+    try:
+        return asyncio.run(benchmark(args))
+    except Exception as err:
+        print(f"benchmark failed: {type(err).__name__}: {err}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

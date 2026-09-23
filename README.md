@@ -87,7 +87,9 @@ python tools/native_talk_rtsp_probe.py \
 The probe reports whether the tone is detected in the RTSP audio and estimates
 the time from the first native tone frame to that observation.
 
-The benchmark separates the native and direct RTSP send/listen paths:
+The older comparison benchmark separates the native and direct RTSP send/listen
+paths. It currently uses the camera and Home Assistant constants at the top of
+`tools/two_way_audio_benchmark.py`; set those for your installation before use:
 
 - `native`: Baichuan native send, direct camera RTSP listen.
 - `direct-rtsp`: direct camera RTSP backchannel send, direct camera RTSP listen.
@@ -96,8 +98,7 @@ To validate direct RTSP audio reception without sending, run capture-only tests:
 
 ```bash
 python tools/two_way_audio_benchmark.py \
-  --host 192.168.1.40 --username admin --channel 0 \
-  --capture-runs 3 --observe 5 --play
+  --capture-runs 3 --play
 ```
 
 To compare repeated native and direct RTSP backchannel runs, use the benchmark
@@ -105,10 +106,43 @@ harness:
 
 ```bash
 python tools/two_way_audio_benchmark.py \
-  --host 192.168.1.40 --username admin --channel 0 \
-  --native-runs 5 --direct-rtsp-runs 5 \
-  --observe 5
+  --native-runs 5 --direct-rtsp-runs 5
 ```
 
 The report shows mean, median, min/max, first-run (cold), and subsequent-run
 (warm) latency for native and direct RTSP.
+
+### Repeatable native speaker measurement
+
+To measure when the doorbell microphone hears a tone sent through Home
+Assistant's native talk path, use a Home Assistant local-account username and
+the doorbell password, then run:
+
+```bash
+python tools/native_talk_acoustic_benchmark.py \
+  --ha-url https://your-home-assistant.example \
+  --ha-username your_ha_username \
+  --entity-id camera.front_door \
+  --host 192.168.1.40 \
+  --runs 5 \
+  --output-dir /tmp/videolink-acoustic-001
+```
+
+Set `VIDEOLINK_PASSWORD` as an environment variable or let the tool prompt for
+the doorbell password. The tool also prompts for the Home Assistant password;
+`VIDEOLINK_HA_PASSWORD` can supply it from the environment. A local-account
+login is exchanged for a temporary token in memory, which the tool revokes
+after the run. If your Home Assistant login uses MFA or another provider, set
+`VIDEOLINK_HA_TOKEN` instead. The benchmark requires
+`ffmpeg` and the Python `websockets` package. The output directory must be new.
+Each run records `run-XX.wav`, and `report.json` contains every detection,
+failure, summary latency, and an approximate tone-continuity score. Listen to
+the recordings as well as reading the numbers: a missed detection or a gap in
+the tone score may mean the doorbell's echo cancellation hid the tone from its
+own microphone.
+
+The reported interval starts when the test sends Home Assistant's WebSocket
+tone command and ends when the tone is detected in decoded doorbell RTSP audio.
+It includes speaker-to-microphone pickup and the RTSP return path. It does not
+measure browser microphone capture or give an exact speaker-onset timestamp.
+Keep the doorbell's microphone clear of other 440 Hz sounds during the test.
