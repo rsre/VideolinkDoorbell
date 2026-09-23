@@ -118,3 +118,32 @@ async def test_snapshot_retries_a_rejected_token() -> None:
     client = Client(Session(), "camera.local", "user", "password")
     assert await client.snapshot(0) == b"\xff\xd8jpeg"
     assert client.login_count == 2
+
+
+@pytest.mark.asyncio
+async def test_native_talk_owner_prevents_other_cards_from_stopping_session(monkeypatch) -> None:
+    class Channel:
+        def __init__(self, *args, **kwargs):
+            self.talk_config = object()
+            self.failed = False
+            self.stopped = False
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(api, "NativeTalkChannel", Channel)
+    client = api.VideolinkClient(object(), "camera.local", "user", "password")
+    await client.native_talk_start(0, owner="card-one")
+    channel = client._native_talk
+    with pytest.raises(api.VideolinkError, match="another card"):
+        await client.native_talk_start(0, owner="card-two")
+    await client.native_talk_stop(owner="card-two")
+    assert channel.stopped is False
+    await client.native_talk_stop(owner="card-one")
+    assert channel.stopped is True
+    with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
+        await client.native_talk_start(0, owner="card-one", require_owner=True)
+    assert client._native_talk is None

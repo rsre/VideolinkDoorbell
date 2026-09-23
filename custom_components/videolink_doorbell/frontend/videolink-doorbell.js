@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.18-native-talk2";
+const CARD_VERSION = "0.12.19-native-talk3";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -24,14 +24,17 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeSampleRate = 16000;
     this._nativeFrameSamples = 1024;
     this._nativePlaybackContext = undefined;
+    this._nativePlaybackGain = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
     this._nativeMixUnsubscribe = undefined;
     this._nativeSessionReady = false;
     this._nativeSessionStarting = undefined;
+    this._nativeToken = undefined;
+    this._nativeUsesMix = false;
     this._nativePcm = [];
     this._nativePendingSends = new Set();
-    this._nativeQueueLimit = 32;
+    this._nativeQueueLimit = 4;
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
     this._nativeTalking = false;
@@ -119,6 +122,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     const talkMode = ["rtsp", "native"].includes(config.talk_mode)
       ? config.talk_mode
       : "rtsp";
+    const talkModeChanged = Boolean(previous) && previous.talk_mode !== talkMode;
     const nativeTalkDisabled = previous?.talk_mode === "native" && talkMode !== "native";
     this._config = {
       card_style: cardStyle,
@@ -132,11 +136,13 @@ class VideolinkDoorbellCard extends HTMLElement {
       talk_mode: talkMode,
     };
     if (!previous || changed) this._muted = true;
-    if (controlsHidden) {
-      this._stopMicrophone();
-    }
-    if (nativeTalkDisabled || (controlsHidden && this._config.talk_mode === "native")) {
-      this._runLifecycle("stop native talk", () => this._stopNativeTalkSession());
+    if (controlsHidden || talkModeChanged || nativeTalkDisabled) {
+      this._runLifecycle("stop talk on card change", async () => {
+        await this._stopMicrophone();
+        if (nativeTalkDisabled || (controlsHidden && this._config.talk_mode === "native")) {
+          await this._stopNativeTalkSession();
+        }
+      });
     }
     this._render();
     if (mediaChanged && this.isConnected) {
@@ -262,7 +268,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       </ha-card>`;
 
     this._video = this.shadowRoot.querySelector("video, audio");
-    this._video.muted = this._muted;
+    this._video.muted = this._muted || this._nativeUsesMix;
     this._attachRemoteStream();
     this._status = this.shadowRoot.querySelector(".status");
     this._talkButton = this.shadowRoot.querySelector(".talk");
@@ -304,11 +310,12 @@ class VideolinkDoorbellCard extends HTMLElement {
   _attachRemoteStream() {
     if (!this._video || !this._remoteStream) return;
     this._video.srcObject = this._remoteStream;
-    this._video.muted = this._muted;
+    this._video.muted = this._muted || this._nativeUsesMix;
     this._video.play().catch(() => {
       if (!this._muted) {
         this._muted = true;
         this._video.muted = true;
+        if (this._nativePlaybackGain) this._nativePlaybackGain.gain.value = 0;
         this._updateSoundButton();
         this._setStatus("Tap the speaker button to enable audio");
         this._video.play().catch(() => undefined);
@@ -636,7 +643,9 @@ class VideolinkDoorbellCard extends HTMLElement {
       // audible, including while microphone setup is in progress.
       this._mutedBeforeTalk = this._muted;
       this._muted = false;
-      if (this._video) this._video.muted = false;
+      if (this._video) this._video.muted = this._nativeUsesMix;
+      if (this._nativePlaybackGain) this._nativePlaybackGain.gain.value = 1;
+      this._nativePlaybackContext?.resume().catch(() => undefined);
       this._updateSoundButton();
     }
     this._updateTalkButton();
@@ -746,10 +755,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateToneButton();
     this._setStatus("Sending test tone…");
     try {
+      await this._ensureNativeTalkSession();
       await this._hass.callWS({
         type: "videolink_doorbell/native_talk",
         action: "tone",
         entity_id: this._config.entity,
+        token: this._nativeToken,
       });
       this._setStatus("Test tone sent");
     } catch (error) {
@@ -793,7 +804,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._mutedBeforeTalk = undefined;
     if (restoreMuted !== undefined) {
       this._muted = restoreMuted;
-      if (this._video) this._video.muted = restoreMuted;
+      if (this._video) this._video.muted = restoreMuted || this._nativeUsesMix;
     }
     if (this._soundButton) this._soundButton.disabled = false;
     this._updateSoundButton();
@@ -900,13 +911,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._nativeLastCaptureAt = capturedAt;
     if (this._nativePendingSends.size >= this._nativeQueueLimit) {
+      // Discard this live frame rather than queue seconds of stale speech.
       this._diagnostics.nativeQueueOverflow = true;
-      this._nativeTalking = false;
-      this._setStatus("Microphone transmission is falling behind. Release and try again.");
-      console.error("[Videolink] Native audio transport queue overflow");
-      this._stopMicrophone().catch((error) => {
-        console.error("[Videolink] Failed to stop native audio capture", error);
-      });
       return;
     }
     const bytes = new Uint8Array(data);
@@ -921,6 +927,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       type: "videolink_doorbell/native_talk",
       action: "audio",
       entity_id: this._config.entity,
+      token: this._nativeToken,
       pcm: encoded,
     }).then(() => {
       this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
@@ -951,17 +958,34 @@ class VideolinkDoorbellCard extends HTMLElement {
         action: "start",
         entity_id: this._config.entity,
       });
+      this._nativeToken = config.token;
       this._nativeSampleRate = Number(config?.sample_rate) || 16000;
       this._nativeFrameSamples = Number(config?.samples_per_frame) || 1024;
-      this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
-        (message) => this._playNativeMix(message),
-        {
+      this._nativeUsesMix = config.audio_stream_mode === "mixAudioStream";
+      if (this._video) this._video.muted = this._muted || this._nativeUsesMix;
+      try {
+        this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
+          (message) => this._playNativeMix(message),
+          {
+            type: "videolink_doorbell/native_talk",
+            action: "subscribe",
+            entity_id: this._config.entity,
+            token: this._nativeToken,
+          },
+          { resubscribe: false },
+        );
+      } catch (error) {
+        await this._hass.callWS({
           type: "videolink_doorbell/native_talk",
-          action: "subscribe",
+          action: "stop",
           entity_id: this._config.entity,
-        },
-        { resubscribe: false },
-      );
+          token: this._nativeToken,
+        }).catch(() => undefined);
+        this._nativeToken = undefined;
+        this._nativeUsesMix = false;
+        if (this._video) this._video.muted = this._muted;
+        throw error;
+      }
       this._nativeSessionReady = true;
     })();
     try {
@@ -989,12 +1013,9 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _stopNativeTalkSession() {
-    if (!this._nativeSessionReady && !this._nativeMixUnsubscribe && !this._nativeSessionStarting) return;
+    if (!this._nativeSessionReady && !this._nativeMixUnsubscribe && !this._nativeSessionStarting && !this._nativeToken) return;
     await this._nativeSessionStarting?.catch(() => undefined);
     if (this._nativeMixUnsubscribe) {
-      // subscribeMessage() returns an async unsubscribe function. The custom
-      // native-talk command is not a HA event subscription, so HA may reject
-      // the cleanup request; never leave that rejection unhandled.
       await Promise.resolve()
         .then(() => this._nativeMixUnsubscribe())
         .catch((error) => {
@@ -1002,13 +1023,16 @@ class VideolinkDoorbellCard extends HTMLElement {
         });
       this._nativeMixUnsubscribe = undefined;
     }
-    await this._hass.callWS({
-      type: "videolink_doorbell/native_talk",
-      action: "stop",
-      entity_id: this._config.entity,
-    }).catch((error) => {
-      this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
-    });
+    if (this._nativeToken) {
+      await this._hass.callWS({
+        type: "videolink_doorbell/native_talk",
+        action: "stop",
+        entity_id: this._config.entity,
+        token: this._nativeToken,
+      }).catch((error) => {
+        this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
+      });
+    }
     await this._nativePlaybackChain.catch(() => undefined);
     if (this._nativePlaybackContext) await this._nativePlaybackContext.close().catch(() => undefined);
     this._nativeContext = undefined;
@@ -1016,9 +1040,13 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeProcessor = undefined;
     this._nativeGain = undefined;
     this._nativePlaybackContext = undefined;
+    this._nativePlaybackGain = undefined;
     this._nativePlaybackNextTime = 0;
     this._nativePlaybackChain = Promise.resolve();
     this._nativeSessionReady = false;
+    this._nativeToken = undefined;
+    this._nativeUsesMix = false;
+    if (this._video) this._video.muted = this._muted;
   }
 
   _playNativeMix(message) {
@@ -1041,7 +1069,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _playNativeMixFrame(encoded) {
-    if (!encoded) return;
+    if (!encoded || !this._nativeUsesMix) return;
     try {
       const binary = atob(encoded);
       const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -1049,16 +1077,25 @@ class VideolinkDoorbellCard extends HTMLElement {
       const samples = new Int16Array(bytes.buffer);
       if (!this._nativePlaybackContext) {
         this._nativePlaybackContext = new AudioContext({ sampleRate: 16000 });
-        await this._nativePlaybackContext.resume();
+        this._nativePlaybackGain = this._nativePlaybackContext.createGain();
+        this._nativePlaybackGain.gain.value = this._muted ? 0 : 1;
+        this._nativePlaybackGain.connect(this._nativePlaybackContext.destination);
         this._nativePlaybackNextTime = this._nativePlaybackContext.currentTime;
       }
       const context = this._nativePlaybackContext;
+      if (context.state !== "running") {
+        context.resume().catch(() => undefined);
+        return;
+      }
       const buffer = context.createBuffer(1, samples.length, 16000);
       const channel = buffer.getChannelData(0);
       for (let index = 0; index < samples.length; index++) channel[index] = samples[index] / 32768;
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      source.connect(this._nativePlaybackGain);
+      if (this._nativePlaybackNextTime - context.currentTime > 0.25) {
+        this._nativePlaybackNextTime = context.currentTime;
+      }
       const start = Math.max(context.currentTime, this._nativePlaybackNextTime);
       source.start(start);
       this._nativePlaybackNextTime = start + buffer.duration;
@@ -1070,7 +1107,11 @@ class VideolinkDoorbellCard extends HTMLElement {
   _toggleSound = () => {
     if (!this._video) return;
     this._muted = !this._muted;
-    this._video.muted = this._muted;
+    this._video.muted = this._muted || this._nativeUsesMix;
+    if (this._nativePlaybackGain) {
+      this._nativePlaybackGain.gain.value = this._muted ? 0 : 1;
+      if (!this._muted) this._nativePlaybackContext.resume().catch(() => undefined);
+    }
     this._video.play().catch(() => undefined);
     this._updateSoundButton();
   };

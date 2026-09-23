@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import secrets
 
 import voluptuous as vol
 
@@ -30,6 +31,7 @@ def async_register(hass: HomeAssistant) -> None:
         vol.Required("action"): vol.In({"start", "audio", "tone", "stop", "subscribe"}),
         vol.Required("entity_id"): cv.entity_id,
         vol.Optional("pcm"): str,
+        vol.Optional("token"): str,
     }
 )
 @websocket_api.async_response
@@ -48,27 +50,45 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
     try:
         action = msg["action"]
         if action == "start":
-            config = await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            token = secrets.token_urlsafe(24)
+            config = await client.native_talk_start(
+                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL), owner=token
+            )
             result = {
                 "ok": True,
+                "token": token,
                 "sample_rate": config.sample_rate,
                 "samples_per_frame": config.length_per_encoder,
+                "audio_stream_mode": config.audio_stream_mode,
             }
-        elif action == "audio":
-            config = await client.native_talk_start(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+        else:
+            token = msg.get("token")
+            if not token:
+                raise ValueError("native talk token is required")
+        if action == "audio":
+            config = await client.native_talk_start(
+                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
+                owner=token,
+                require_owner=True,
+            )
             pcm = _decode_pcm(msg.get("pcm"), config.length_per_encoder)
-            await client.native_talk_audio(pcm, wait=False)
+            await client.native_talk_audio(pcm, wait=False, owner=token)
             result = {"ok": True}
         elif action == "tone":
-            await client.native_talk_tone(entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL))
+            await client.native_talk_tone(
+                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL), owner=token
+            )
             result = {"ok": True}
         elif action == "stop":
-            await client.native_talk_stop()
+            await client.native_talk_stop(owner=token)
             result = {"ok": True}
-        else:
+        elif action == "subscribe":
             subscription_id = msg["id"]
+            active = True
 
             def on_mix_frame(frame) -> None:
+                if not active:
+                    return
                 try:
                     connection.send_message({
                         "id": subscription_id,
@@ -81,7 +101,14 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 except Exception:
                     return
 
-            await client.native_talk_set_mix_callback(on_mix_frame)
+            await client.native_talk_set_mix_callback(on_mix_frame, owner=token)
+
+            def unsubscribe() -> None:
+                nonlocal active
+                active = False
+                hass.async_create_task(client.native_talk_stop(owner=token))
+
+            connection.subscriptions[subscription_id] = unsubscribe
             result = {"ok": True}
     except (ValueError, binascii.Error) as err:
         connection.send_error(msg["id"], "invalid_format", str(err))

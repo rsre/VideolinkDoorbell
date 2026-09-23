@@ -75,3 +75,18 @@ test("blank title hides the header while omitted title remains visible", () => {
   card.setConfig({ entity: "camera.front_door", title: "" });
   assert.equal(card._titleVisible, false);
 });
+
+test("native mix playback mutes WebRTC audio and follows the sound control", () => {
+  const card = new CardUnderTest();
+  card._video = { muted: false, play: () => Promise.resolve() };
+  card._updateSoundButton = () => undefined;
+  card._nativeUsesMix = true;
+  card._nativePlaybackGain = { gain: { value: 0 } };
+  card._nativePlaybackContext = { resume: () => Promise.resolve() };
+  card._muted = true;
+  card._toggleSound();
+  assert.equal(card._video.muted, true);
+  assert.equal(card._nativePlaybackGain.gain.value, 1);
+  card._toggleSound();
+  assert.equal(card._nativePlaybackGain.gain.value, 0);
+});

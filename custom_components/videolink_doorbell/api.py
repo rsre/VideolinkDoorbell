@@ -82,6 +82,7 @@ class VideolinkClient:
         self._login_lock = asyncio.Lock()
         self._native_talk: NativeTalkChannel | None = None
         self._native_talk_lock = asyncio.Lock()
+        self._native_talk_owner: str | None = None
 
     @staticmethod
     def _normalize_host(host: str) -> str:
@@ -311,9 +312,20 @@ class VideolinkClient:
         )
         return f"{url}#backchannel=1#transport=udp" if backchannel else url
 
-    async def native_talk_start(self, channel: int, *, mix_frame_callback=None):
+    async def native_talk_start(
+        self,
+        channel: int,
+        *,
+        owner: str | None = None,
+        require_owner: bool = False,
+        mix_frame_callback=None,
+    ):
         """Open and configure the experimental native Baichuan talk path."""
         async with self._native_talk_lock:
+            if require_owner and (owner is None or self._native_talk_owner != owner):
+                raise VideolinkConnectionError("Native talk session is no longer active")
+            if self._native_talk_owner is not None and self._native_talk_owner != owner:
+                raise VideolinkError("Native talk is already in use by another card")
             if self._native_talk is None:
                 self._native_talk = NativeTalkChannel(
                     self.host,
@@ -330,6 +342,7 @@ class VideolinkClient:
                     raise
             elif self._native_talk.failed:
                 await self._native_talk.restart()
+            self._native_talk_owner = owner
             return self._native_talk.talk_config
 
     @property
@@ -337,11 +350,13 @@ class VideolinkClient:
         """Return the currently negotiated native talk configuration."""
         return self._native_talk.talk_config if self._native_talk is not None else None
 
-    async def native_talk_audio(self, pcm16le: bytes, *, wait: bool = True) -> None:
+    async def native_talk_audio(self, pcm16le: bytes, *, wait: bool = True, owner: str | None = None) -> None:
         """Encode and send exactly one negotiated PCM talk frame."""
         if self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is not active")
-        await self.native_talk_start(self._native_talk.channel)
+        await self.native_talk_start(
+            self._native_talk.channel, owner=owner, require_owner=owner is not None
+        )
         try:
             if wait:
                 await self._native_talk.send_pcm(pcm16le)
@@ -356,9 +371,11 @@ class VideolinkClient:
         except RuntimeError as err:
             raise VideolinkConnectionError(str(err)) from err
 
-    async def native_talk_tone(self, channel: int, *, seconds: float = 2.0) -> None:
+    async def native_talk_tone(self, channel: int, *, seconds: float = 2.0, owner: str | None = None) -> None:
         """Generate and send a test tone without browser audio/WebSocket frames."""
-        await self.native_talk_start(channel)
+        await self.native_talk_start(
+            channel, owner=owner, require_owner=owner is not None
+        )
         if self._native_talk is None or self._native_talk.talk_config is None:
             raise VideolinkConnectionError("Native talk session is not active")
         config = self._native_talk.talk_config
@@ -386,18 +403,23 @@ class VideolinkClient:
         # queued audio. Match the CLI probe's drain before the card stops talk.
         await asyncio.sleep(1.0)
 
-    async def native_talk_set_mix_callback(self, callback) -> None:
+    async def native_talk_set_mix_callback(self, callback, *, owner: str | None = None) -> None:
         """Set the consumer for cleaned native mix audio."""
+        if self._native_talk_owner != owner:
+            raise VideolinkError("Native talk belongs to another card")
         if self._native_talk is None or not self._native_talk.active:
             raise VideolinkConnectionError("Native talk session is not active")
         self._native_talk.set_mix_callback(callback)
 
-    async def native_talk_stop(self) -> None:
+    async def native_talk_stop(self, *, owner: str | None = None) -> None:
         """Stop and close the experimental native talk path."""
         async with self._native_talk_lock:
+            if owner is not None and self._native_talk_owner != owner:
+                return
             if self._native_talk is not None:
                 session = self._native_talk
                 try:
                     await session.stop()
                 finally:
                     self._native_talk = None
+                    self._native_talk_owner = None
