@@ -2,6 +2,89 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.54] - 2026-09-25
+
+### Fixed
+
+- Honor `mute_while_talking` for native talk instead of force-unmuting the
+  speaker during microphone capture; restore listening after push-to-talk.
+  Request browser echo cancellation for local playback when full duplex is
+  explicitly enabled.
+
+## [0.12.53] - 2026-09-25
+
+### Added
+
+- Add an explicit private capture option for the first 64 decrypted bytes of
+  incoming talk frames, to identify the SDK wrapper without exporting keys or
+  full decrypted audio.
+- Decode the observed `202/200` native mix container into its two 2048-byte
+  PCM regions, with strict metadata and waveform guards before playback.
+- Report mix PCM RMS, clipping, rejected frames, and non-silent frames in the
+  acoustic benchmark for on-device quality validation.
+- Add an opt-in `--save-mix-wav` benchmark capture of the decoded card playback
+  signal, saved with owner-only file permissions.
+
+### Fixed
+
+- Play the mix callback's far-end (doorbell microphone) PCM. The near-end
+  buffer is the local outgoing talk signal; filtering and playing it caused
+  metallic self-audio. Keep the Python LMS filter off the playback path.
+
+## [0.12.52] - 2026-09-25
+
+### Changed
+
+- Buffer raw receives in Home Assistant during timing trials and fetch them
+  afterward, with a 16 MiB cap and dropped-frame count.
+- Keep unknown 202/200 wire payloads out of PCM playback; native audio input
+  continues to use WebRTC until SDK-compatible decoding is verified.
+- Match stop responses by command ID, bound unsolicited response storage, and
+  recover when the native receive task fails.
+- Use receive-only WebRTC audio in native-talk mode to avoid a silent outbound
+  PCMU stream.
+- Require camera control permission for native talk WebSocket commands and
+  expose only counts from an AES-CFB wire-format probe (no decrypted audio).
+- Bound native command waits and match open/stop acknowledgements so stale
+  unsolicited messages cannot hang or satisfy the wrong command.
+- Preserve an opted-in raw capture callback if the native session reconnects.
+
+## [0.12.51] - 2026-09-24
+
+### Added
+
+- Optional `--dump-raw-received` acoustic benchmark capture. It saves each
+  post-subscription native receive frame to a private JSONL file with header
+  metadata and base64 extension/payload bytes for later protocol inspection.
+
+## [0.12.50] - 2026-09-24
+
+### Added
+
+- Native mix diagnostics count raw camera messages, talk-frame matches, parsed
+  PCM frames, callback forwards, and WebSocket events during each acoustic
+  benchmark run. The report includes camera message IDs/response codes and
+  reader errors without storing audio payloads or credentials.
+
+## [0.12.49] - 2026-09-24
+
+### Changed
+
+- Watch native mix frame delivery throughout the card session, and report when
+  frames are still absent during an active push-to-talk attempt.
+- Show the age of the last native mix frame in card diagnostics.
+
+## [0.12.48] - 2026-09-24
+
+### Changed
+
+- Native-talk cards prefer native mixed camera audio once playable frames arrive,
+  falling back to WebRTC if the mix starts silent, is unavailable, or stops.
+- Added native-mix availability, frame counts, and playback state to the card's
+  debug diagnostics.
+- Log a deduplicated console warning in debug mode explaining why native mix
+  audio fell back to WebRTC.
+
 ## [0.12.47] - 2026-09-24
 
 ### Added

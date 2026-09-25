@@ -24,10 +24,12 @@ Home Assistant's built-in go2rtc integration combines the FLV video producer wit
 - While transmitting, apply the normal WebRTC echo-cancellation and mute behavior.
 - When PTT is released:
   - Detach and stop the microphone.
-  - Restore the keepalive audio track.
+  - Detach the outbound audio track; do not continue sending silent RTP.
   - Restore the previous mute state.
 
-The stream starts muted; using push-to-talk keeps inbound sound muted while transmitting to avoid feedback, then enables it on release so the reply can be heard.
+The stream starts muted. With `mute_while_talking` enabled (the default),
+inbound sound is muted during PTT to avoid feedback, then its previous state
+is restored on release.
 
 ### Native mode: native_talk: true
 
@@ -42,7 +44,8 @@ When controls are visible and the card becomes ready:
 
 When PTT is pressed:
 
-- Unmute inbound audio immediately.
+- Apply `mute_while_talking` before requesting microphone access. By default,
+  mute both the WebRTC track and native playback gain while PTT is held.
 - Request microphone access.
 - Capture microphone audio at 16 kHz mono.
 - Convert it into the camera’s negotiated frame size, currently 1024 samples.
@@ -50,16 +53,23 @@ When PTT is pressed:
 - The backend keeps at most four pending frames and drops stale frames so speech
   cannot build up seconds of delay during a network slowdown.
 - The backend sends frames through one native TCP session owned by this card.
-- Prefer an available WebRTC inbound audio track, including FLV camera audio.
-  Use the native mix stream only when WebRTC supplies no audio track, so the
-  mix path does not mute an otherwise working camera feed.
+- Decode incoming 202/200 mix frames and play the far-end (doorbell microphone)
+  PCM when valid. Keep FLV/WebRTC audio as a fallback until playable mix frames
+  arrive or when the mix stops.
+- With `mute_while_talking` disabled for full duplex, request browser echo
+  cancellation for local speaker output. Its effectiveness is browser/device
+  dependent; headphones are the reliable way to prevent feedback.
+- Check native mix delivery throughout the session. In debug mode, report a
+  distinct warning if an active PTT attempt receives no new mix frames for
+  two seconds; the initial idle warning alone does not establish that mix
+  audio is unavailable during talk.
 
 When PTT is released:
 
 - Stop microphone capture only.
 - Wait for queued outbound frames to drain.
 - Keep the native camera session open for the next PTT press.
-- Keep native inbound audio active.
+- Resume incoming audio so the camera's response can be heard.
 
 When the card is hidden, removed, disconnected, or controls are disabled:
 

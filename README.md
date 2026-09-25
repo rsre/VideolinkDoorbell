@@ -53,6 +53,11 @@ Home Assistant must be used over HTTPS (or localhost) because browsers block mic
 - `talk_mode` selects the talkback path (defaults to `rtsp`):
   - `rtsp` uses the WebRTC/RTSP backchannel.
   - `native` uses the experimental native Baichuan protocol.
+- `mute_while_talking` defaults to `true` in both modes. It silences camera
+  audio while the microphone is held open to prevent speaker-to-microphone
+  feedback, then resumes listening when native push-to-talk ends. Set it to
+  `false` for simultaneous listening and talking only if your browser/device
+  echo cancellation or headphones prevent feedback.
 - `video_fit` controls the video layout (default is `contain`):
   - `contain` scales the entire frame with letterboxing,
   - `cover` crops it,
@@ -136,10 +141,36 @@ after the run. If your Home Assistant login uses MFA or another provider, set
 `VIDEOLINK_HA_TOKEN` instead. The benchmark requires
 `ffmpeg` and the Python `websockets` package. The output directory must be new.
 Each run records `run-XX.wav`, and `report.json` contains every detection,
-failure, summary latency, and an approximate tone-continuity score. Listen to
+failure, summary latency, an approximate tone-continuity score, and native-mix
+receive counters. The counters distinguish no camera messages, data-bearing
+talk messages, decoded PCM frames, and missing WebSocket events. Decoding is
+currently disabled for the unverified camera wire body. Deploy
+this version of the integration to Home Assistant and restart it before using
+the new diagnostics command. Listen to
 the recordings as well as reading the numbers: a missed detection or a gap in
 the tone score may mean the doorbell's echo cancellation hid the tone from its
 own microphone.
+
+The `aes_extension_xml_frames` and `aes_payload_media_magic_frames` counters
+are non-playback probes: they only count recognizable headers after trying the
+session's AES-CFB key. A zero does not establish that no audio was received;
+it may use a different wrapper or encryption mode.
+
+For protocol inspection, add `--dump-raw-received`. The benchmark then writes
+`native-receives.jsonl` in the output directory, with one record
+per native message received after subscription. Home Assistant buffers up to
+16 MiB during the timed trials, then the CLI fetches the records after the
+last trial; `raw_receive_dropped` reports any frames lost at the cap. Header fields are readable;
+extension and payload bytes are base64-encoded. The file is created with
+owner-only permissions and may contain camera audio or metadata. Keep it
+private and delete it when no longer needed.
+
+For the native mix wrapper investigation, `--dump-decrypted-headers` also
+records the first 64 AES-decrypted bytes of each data-bearing talk message in
+the same private JSONL file. It implies raw capture. These bytes may contain
+audio; do not share the file publicly. No AES key or full decrypted payload is
+written. This option adds a small amount of per-frame work, so use the normal
+benchmark without it for final latency measurements.
 
 The reported interval starts when the test sends Home Assistant's WebSocket
 tone command and ends when the tone is detected in decoded doorbell RTSP audio.
