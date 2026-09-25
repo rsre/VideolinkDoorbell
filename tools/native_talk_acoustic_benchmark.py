@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 from datetime import datetime, timezone
 import getpass
 import json
+import math
 import os
 from pathlib import Path
 import statistics
+import struct
 import sys
 import time
 from urllib.parse import quote, urlsplit, urlunsplit
+import wave
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ThreadedResolver
 
@@ -48,6 +52,17 @@ class HomeAssistantNativeTone:
         self.subscription_id: int | None = None
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._reader_task: asyncio.Task | None = None
+        self.mix_events = 0
+        self.mix_pcm_bytes = 0
+        self.mix_pcm_squared_sum = 0
+        self.mix_pcm_samples = 0
+        self.mix_pcm_non_silent_frames = 0
+        self.mix_pcm_clipped_samples = 0
+        self.capture_mix_pcm = False
+        self.mix_pcm_frames: list[bytes] = []
+        self.raw_dump_count = 0
+        self.raw_dump_dropped = 0
+        self._raw_dump_file = None
 
     async def connect(self) -> None:
         try:
@@ -146,6 +161,32 @@ class HomeAssistantNativeTone:
             while True:
                 response = json.loads(await self.socket.recv())
                 if response.get("type") == "event":
+                    if response.get("id") == self.subscription_id:
+                        event = response.get("event") or {}
+                        if event.get("type") == "videolink_doorbell/native_talk_raw":
+                            if self._raw_dump_file is not None:
+                                self._raw_dump_file.write(json.dumps({
+                                    "received_at_utc": datetime.now(timezone.utc).isoformat(),
+                                    **event,
+                                }) + "\n")
+                                self.raw_dump_count += 1
+                        else:
+                            self.mix_events += 1
+                            pcm = event.get("pcm")
+                            if isinstance(pcm, str):
+                                try:
+                                    decoded = base64.b64decode(pcm, validate=True)
+                                    self.mix_pcm_bytes += len(decoded)
+                                    if len(decoded) == 2048:
+                                        if self.capture_mix_pcm:
+                                            self.mix_pcm_frames.append(decoded)
+                                        samples = struct.unpack("<1024h", decoded)
+                                        self.mix_pcm_samples += len(samples)
+                                        self.mix_pcm_squared_sum += sum(sample * sample for sample in samples)
+                                        self.mix_pcm_non_silent_frames += any(abs(sample) >= 64 for sample in samples)
+                                        self.mix_pcm_clipped_samples += sum(abs(sample) >= 32760 for sample in samples)
+                                except ValueError:
+                                    pass
                     continue
                 future = self._pending.pop(response.get("id"), None)
                 if future is not None and not future.done():
@@ -158,7 +199,8 @@ class HomeAssistantNativeTone:
 
     async def command(
         self, action: str, *, timeout: float = 15, on_send=None,
-        allow_missing_token: bool = False,
+        allow_missing_token: bool = False, dump_raw: bool = False,
+        cursor: int = 0, decrypt_headers: bool = False,
     ) -> tuple[int, dict]:
         if self.socket is None:
             raise RuntimeError("Home Assistant WebSocket is not connected")
@@ -170,6 +212,9 @@ class HomeAssistantNativeTone:
             self._reader_task = asyncio.create_task(self._read_messages())
         self.command_id += 1
         command_id = self.command_id
+        if action == "subscribe":
+            # Events can arrive before Home Assistant's subscribe acknowledgement.
+            self.subscription_id = command_id
         response_future = asyncio.get_running_loop().create_future()
         self._pending[command_id] = response_future
         message = {
@@ -181,6 +226,12 @@ class HomeAssistantNativeTone:
         if action != "start":
             if self.session_token:
                 message["token"] = self.session_token
+        if action == "subscribe" and dump_raw:
+            message["dump_raw"] = True
+            if decrypt_headers:
+                message["dump_decrypted_header"] = True
+        if action == "raw_fetch":
+            message["cursor"] = cursor
         try:
             if on_send is not None:
                 on_send(time.monotonic())
@@ -192,7 +243,8 @@ class HomeAssistantNativeTone:
         finally:
             self._pending.pop(command_id, None)
 
-    async def start(self) -> dict:
+    async def start(self, *, raw_dump_path: Path | None = None,
+                    decrypt_headers: bool = False) -> dict:
         _, result = await self.command("start")
         token = result.get("token")
         if not isinstance(token, str) or not token:
@@ -204,18 +256,58 @@ class HomeAssistantNativeTone:
                 "and restart Home Assistant before retrying"
             )
         self.session_token = token
-        self.subscription_id, _ = await self.command("subscribe")
+        if raw_dump_path is not None:
+            # Raw frames may contain microphone audio or camera metadata.
+            descriptor = os.open(raw_dump_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self._raw_dump_file = os.fdopen(descriptor, "w", encoding="utf-8")
+        self.subscription_id, _ = await self.command(
+            "subscribe", dump_raw=raw_dump_path is not None,
+            decrypt_headers=decrypt_headers,
+        )
         return result
 
-    async def close(self) -> None:
+    async def mix_snapshot(self) -> dict:
+        """Snapshot camera-side receive counters and CLI-delivered mix events."""
         try:
-            if self.socket is not None and (self.session_token or self._legacy_session_started):
-                await self.command(
-                    "stop", timeout=8, allow_missing_token=self._legacy_session_started
-                )
-        except Exception:
-            pass
+            _, backend = await self.command("diagnostics")
+        except RuntimeError as err:
+            raise RuntimeError(
+                "Native mix diagnostics require the updated Videolink integration "
+                "in Home Assistant; deploy it and restart Home Assistant"
+            ) from err
+        return {
+            "backend": backend,
+            "websocket_events": self.mix_events,
+            "websocket_pcm_bytes": self.mix_pcm_bytes,
+            "pcm_samples": self.mix_pcm_samples,
+            "pcm_squared_sum": self.mix_pcm_squared_sum,
+            "pcm_non_silent_frames": self.mix_pcm_non_silent_frames,
+            "pcm_clipped_samples": self.mix_pcm_clipped_samples,
+        }
+
+    async def close(self) -> None:
+        capture_error = None
+        try:
+            if self._raw_dump_file is not None and self.session_token:
+                cursor = 0
+                while True:
+                    _, batch = await self.command("raw_fetch", timeout=30, cursor=cursor)
+                    for frame in batch["frames"]:
+                        self._raw_dump_file.write(json.dumps(frame) + "\n")
+                        self.raw_dump_count += 1
+                    self.raw_dump_dropped = batch["dropped"]
+                    next_cursor = batch["next_cursor"]
+                    if batch["done"] or next_cursor <= cursor:
+                        break
+                    cursor = next_cursor
+        except Exception as err:
+            capture_error = err
         finally:
+            try:
+                if self.socket is not None and (self.session_token or self._legacy_session_started):
+                    await self.command("stop", timeout=8, allow_missing_token=self._legacy_session_started)
+            except Exception:
+                pass
             try:
                 if self.socket is not None:
                     await self.socket.close()
@@ -224,11 +316,16 @@ class HomeAssistantNativeTone:
                     self._reader_task.cancel()
                     await asyncio.gather(self._reader_task, return_exceptions=True)
                     self._reader_task = None
+                if self._raw_dump_file is not None:
+                    self._raw_dump_file.close()
+                    self._raw_dump_file = None
                 self.socket = None
                 self.session_token = None
                 self._legacy_session_started = False
                 self.access_token = None
                 await self._revoke_refresh_token()
+        if capture_error is not None:
+            raise RuntimeError(f"raw capture retrieval failed: {capture_error}") from capture_error
 
 
 async def _wait_for_camera_audio(capture: RtspAudioCapture, task: asyncio.Task, timeout: float) -> None:
@@ -256,6 +353,57 @@ def summarize(runs: list[dict]) -> dict:
             ), 1) if any(run["latency_ms"] is not None for run in runs[1:]) else None,
         })
     return summary
+
+
+def mix_delta(before: dict, after: dict) -> dict:
+    """Explain where camera mix data disappeared during one benchmark trial."""
+    earlier, later = before["backend"], after["backend"]
+    counters = (
+        "raw_messages", "talk_candidates", "parsed_frames", "forwarded_frames",
+        "rejected_frames", "aes_extension_xml_frames", "aes_payload_media_magic_frames",
+    )
+    result = {key: later.get(key, 0) - earlier.get(key, 0) for key in counters}
+    result["headers"] = {
+        key: count - earlier.get("headers", {}).get(key, 0)
+        for key, count in later.get("headers", {}).items()
+        if count > earlier.get("headers", {}).get(key, 0)
+    }
+    result["websocket_events"] = after["websocket_events"] - before["websocket_events"]
+    result["websocket_pcm_bytes"] = after["websocket_pcm_bytes"] - before["websocket_pcm_bytes"]
+    for key in ("pcm_samples", "pcm_squared_sum", "pcm_non_silent_frames", "pcm_clipped_samples"):
+        result[key] = after.get(key, 0) - before.get(key, 0)
+    result["pcm_rms"] = round(math.sqrt(result["pcm_squared_sum"] / result["pcm_samples"]), 1) if result["pcm_samples"] else None
+    result["pcm_clipped_percent"] = round(100 * result["pcm_clipped_samples"] / result["pcm_samples"], 3) if result["pcm_samples"] else None
+    result.pop("pcm_squared_sum")
+    result.pop("pcm_samples")
+    result.pop("pcm_clipped_samples")
+    result["pcm_verified"] = later.get("pcm_verified", False)
+    result["reader_error"] = later.get("reader_error")
+    if result["raw_messages"] == 0:
+        result["interpretation"] = "no Baichuan messages observed on the native talk socket during this run"
+    elif result["talk_candidates"] == 0:
+        result["interpretation"] = "camera sent messages, but no data-bearing talk ID 202 messages"
+    elif result["parsed_frames"] == 0:
+        result["interpretation"] = "data-bearing talk messages arrived, but no recognized mix container was decoded"
+    elif result["forwarded_frames"] == 0:
+        result["interpretation"] = "mix container parsed, but PCM validation or callback prevented forwarding"
+    elif result["websocket_events"] == 0:
+        result["interpretation"] = "PCM mix forwarded, but no mix events reached the CLI"
+    else:
+        result["interpretation"] = "native mix events reached the CLI"
+    if result["reader_error"]:
+        result["interpretation"] += f"; reader stopped: {result['reader_error']}"
+    return result
+
+
+def save_mix_wav(path: Path, frames: list[bytes]) -> None:
+    """Save opted-in decoded talk mix privately for listening/quality checks."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as file, wave.open(file, "wb") as recording:
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(16000)
+        recording.writeframes(b"".join(frames))
 
 
 def tone_continuity(flags: list[bool], tone_seconds: float) -> dict | None:
@@ -349,17 +497,45 @@ async def benchmark(args: argparse.Namespace) -> int:
         args.ha_url, access_token, args.entity_id,
         username=ha_username, password=ha_password,
     )
+    client.capture_mix_pcm = getattr(args, "save_mix_wav", False)
     runs: list[dict] = []
     profile = None
     try:
         await client.connect()
-        profile = await client.start()
-        args.output_dir.mkdir(parents=True, exist_ok=False)
+        decrypt_headers = getattr(args, "dump_decrypted_headers", False)
+        dump_raw = getattr(args, "dump_raw_received", False) or decrypt_headers
+        if dump_raw:
+            args.output_dir.mkdir(parents=True, exist_ok=False)
+            profile = await client.start(
+                raw_dump_path=args.output_dir / "native-receives.jsonl",
+                decrypt_headers=decrypt_headers,
+            )
+        else:
+            profile = await client.start()
+        await client.mix_snapshot()  # Fail early if Home Assistant has the older integration.
+        if not dump_raw:
+            args.output_dir.mkdir(parents=True, exist_ok=False)
         for run_number in range(1, args.runs + 1):
+            mix_frame_start = len(client.mix_pcm_frames) if client.capture_mix_pcm else 0
+            mix_before = await client.mix_snapshot()
             result = await _run_trial(client, rtsp_url, args.output_dir, run_number, args.observe)
+            result["native_mix"] = mix_delta(mix_before, await client.mix_snapshot())
+            if client.capture_mix_pcm:
+                mix_wav = f"run-{run_number:02d}-native-mix.wav"
+                save_mix_wav(args.output_dir / mix_wav, client.mix_pcm_frames[mix_frame_start:])
+                result["native_mix"]["recording"] = mix_wav
             runs.append(result)
             latency = result["latency_ms"]
             print(f"run {run_number}: {result['status']}" + (f" ({latency:.1f} ms)" if latency is not None else ""))
+            print(f"  native mix: {result['native_mix']['interpretation']} "
+                  f"(raw={result['native_mix']['raw_messages']}, "
+                  f"parsed={result['native_mix']['parsed_frames']}, "
+                  f"events={result['native_mix']['websocket_events']}, "
+                  f"rejected={result['native_mix']['rejected_frames']}, "
+                  f"pcm_rms={result['native_mix']['pcm_rms']}, "
+                  f"clipped={result['native_mix']['pcm_clipped_percent']}%, "
+                  f"aes_xml={result['native_mix']['aes_extension_xml_frames']}, "
+                  f"aes_media={result['native_mix']['aes_payload_media_magic_frames']})")
             if run_number < args.runs:
                 await asyncio.sleep(0.5)
     finally:
@@ -378,6 +554,10 @@ async def benchmark(args: argparse.Namespace) -> int:
             "samples_per_frame": profile.get("samples_per_frame"),
             "audio_stream_mode": profile.get("audio_stream_mode"),
         },
+        "raw_receive_dump": "native-receives.jsonl" if dump_raw else None,
+        "raw_receive_frames": client.raw_dump_count if dump_raw else 0,
+        "raw_receive_dropped": client.raw_dump_dropped if dump_raw else 0,
+        "decrypted_header_capture": decrypt_headers,
         "runs": runs,
         "summary": summary,
     }
@@ -401,6 +581,12 @@ def main() -> int:
                         help="seconds to observe after the 2-second tone starts")
     parser.add_argument("--output-dir", type=Path, required=True,
                         help="new directory for per-run WAV recordings and report.json")
+    parser.add_argument("--dump-raw-received", action="store_true",
+                        help="save all post-subscription native receive frames as private JSONL (may contain audio)")
+    parser.add_argument("--dump-decrypted-headers", action="store_true",
+                        help="also include first 64 decrypted bytes of each data-bearing talk frame; implies --dump-raw-received and may contain audio")
+    parser.add_argument("--save-mix-wav", action="store_true",
+                        help="save private WAV files of decoded native mix audio for listening/quality checks")
     args = parser.parse_args()
     if args.runs < 1 or args.channel < 0 or args.observe <= 0 or not 1 <= args.rtsp_port <= 65535:
         parser.error("runs must be positive, channel nonnegative, observe positive, and RTSP port valid")

@@ -135,10 +135,30 @@ async def test_native_talk_owner_prevents_other_cards_from_stopping_session(monk
         async def stop(self):
             self.stopped = True
 
+        def mix_diagnostics(self):
+            return {"raw_messages": 3}
+
+        def set_raw_callback(self, callback):
+            self.raw_callback = callback
+
+        def decrypt_wire_prefix(self, payload):
+            return payload[:64]
+
     monkeypatch.setattr(api, "NativeTalkChannel", Channel)
     client = api.VideolinkClient(object(), "camera.local", "user", "password")
     await client.native_talk_start(0, owner="card-one")
     channel = client._native_talk
+    assert client.native_talk_mix_diagnostics(owner="card-one") == {"raw_messages": 3}
+    callback = lambda *_args: None
+    client.native_talk_set_raw_callback(callback, owner="card-one")
+    assert channel.raw_callback is callback
+    assert client.native_talk_decrypt_wire_prefix(b"prefix", owner="card-one") == b"prefix"
+    with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
+        client.native_talk_mix_diagnostics(owner="card-two")
+    with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
+        client.native_talk_set_raw_callback(callback, owner="card-two")
+    with pytest.raises(api.VideolinkConnectionError, match="no longer active"):
+        client.native_talk_decrypt_wire_prefix(b"prefix", owner="card-two")
     with pytest.raises(api.VideolinkError, match="another card"):
         await client.native_talk_start(0, owner="card-two")
     await client.native_talk_stop(owner="card-two")

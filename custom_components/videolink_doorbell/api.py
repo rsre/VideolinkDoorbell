@@ -83,6 +83,7 @@ class VideolinkClient:
         self._native_talk: NativeTalkChannel | None = None
         self._native_talk_lock = asyncio.Lock()
         self._native_talk_owner: str | None = None
+        self._native_raw_captures: dict[str, tuple] = {}
 
     @staticmethod
     def _normalize_host(host: str) -> str:
@@ -336,6 +337,7 @@ class VideolinkClient:
                     # A broken old channel must not prevent a new owner from trying.
                     pass
                 finally:
+                    self._native_raw_captures.pop(self._native_talk_owner, None)
                     self._native_talk = None
                     self._native_talk_owner = None
             if self._native_talk is None:
@@ -427,6 +429,24 @@ class VideolinkClient:
             raise VideolinkConnectionError("Native talk session is not active")
         self._native_talk.set_mix_callback(callback)
 
+    def native_talk_set_raw_callback(self, callback, *, owner: str) -> None:
+        """Observe native receive frames for an explicitly opted-in owner."""
+        if self._native_talk_owner != owner or self._native_talk is None:
+            raise VideolinkConnectionError("Native talk session is no longer active")
+        self._native_talk.set_raw_callback(callback)
+
+    def native_talk_mix_diagnostics(self, *, owner: str) -> dict:
+        """Read mix counters from the caller's active native session."""
+        if self._native_talk_owner != owner or self._native_talk is None:
+            raise VideolinkConnectionError("Native talk session is no longer active")
+        return self._native_talk.mix_diagnostics()
+
+    def native_talk_decrypt_wire_prefix(self, payload: bytes, *, owner: str) -> bytes:
+        """Return at most 64 decrypted bytes for an opted-in capture owner."""
+        if self._native_talk_owner != owner or self._native_talk is None:
+            raise VideolinkConnectionError("Native talk session is no longer active")
+        return self._native_talk.decrypt_wire_prefix(payload)
+
     async def native_talk_stop(self, *, owner: str | None = None) -> None:
         """Stop and close the experimental native talk path."""
         async with self._native_talk_lock:
@@ -437,5 +457,6 @@ class VideolinkClient:
                 try:
                     await session.stop()
                 finally:
+                    self._native_raw_captures.pop(self._native_talk_owner, None)
                     self._native_talk = None
                     self._native_talk_owner = None

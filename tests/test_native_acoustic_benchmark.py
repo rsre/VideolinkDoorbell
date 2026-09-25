@@ -6,6 +6,7 @@ import asyncio
 import argparse
 import importlib.util
 import json
+import stat
 from pathlib import Path
 import sys
 
@@ -117,7 +118,7 @@ def test_tone_continuity_reports_gaps_in_detected_audio() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ha_native_tone_uses_owned_session_for_every_command() -> None:
+async def test_ha_native_tone_uses_owned_session_for_every_command(tmp_path) -> None:
     class Socket:
         def __init__(self) -> None:
             self.sent = []
@@ -128,9 +129,21 @@ async def test_ha_native_tone_uses_owned_session_for_every_command() -> None:
             message = json.loads(raw)
             self.sent.append(message)
             result = {"token": "session-1"} if message["action"] == "start" else {"ok": True}
+            if message["action"] == "diagnostics":
+                result = {
+                    "raw_messages": 2, "headers": {"202/0": 2},
+                    "talk_candidates": 2, "parsed_frames": 2,
+                    "forwarded_frames": 2, "reader_error": None,
+                }
+            if message["action"] == "raw_fetch":
+                result = {"frames": [{
+                    "message_id": 202, "response_code": 200,
+                    "extension_b64": "", "payload_b64": "AQIDBA==",
+                    "decrypted_payload_prefix_b64": "MTIzNA==",
+                }], "next_cursor": 1, "done": True, "dropped": 0}
             if message["action"] == "tone":
                 await self.pending.put(json.dumps({
-                    "id": 2, "type": "event", "event": {"pcm": ""},
+                    "id": 2, "type": "event", "event": {"pcm": "AQIDBA=="},
                 }))
             await self.pending.put(json.dumps({
                 "id": message["id"], "type": "result", "success": True, "result": result,
@@ -147,14 +160,71 @@ async def test_ha_native_tone_uses_owned_session_for_every_command() -> None:
     )
     socket = Socket()
     client.socket = socket
-    await client.start()
+    dump_path = tmp_path / "native-receives.jsonl"
+    await client.start(raw_dump_path=dump_path, decrypt_headers=True)
     await client.command("tone")
+    snapshot = await client.mix_snapshot()
+    assert snapshot["backend"]["parsed_frames"] == 2
+    assert snapshot["websocket_events"] == 1
+    assert snapshot["websocket_pcm_bytes"] == 4
+    assert client.raw_dump_count == 0
     await client.close()
     assert [item["action"] for item in socket.sent] == [
-        "start", "subscribe", "tone", "stop",
+        "start", "subscribe", "tone", "diagnostics", "raw_fetch", "stop",
     ]
     assert all(item.get("token") == "session-1" for item in socket.sent[1:])
+    assert socket.sent[1]["dump_raw"] is True
+    assert socket.sent[1]["dump_decrypted_header"] is True
     assert socket.closed
+    dump = [json.loads(line) for line in dump_path.read_text().splitlines()]
+    assert dump[0]["message_id"] == 202
+    assert dump[0]["response_code"] == 200
+    assert dump[0]["payload_b64"] == "AQIDBA=="
+    assert dump[0]["decrypted_payload_prefix_b64"] == "MTIzNA=="
+    assert stat.S_IMODE(dump_path.stat().st_mode) == 0o600
+
+
+def test_mix_delta_distinguishes_camera_filter_and_websocket_losses() -> None:
+    before = {
+        "backend": {"raw_messages": 1, "headers": {"11/200": 1},
+                    "talk_candidates": 0, "parsed_frames": 0,
+                    "forwarded_frames": 0, "reader_error": None},
+        "websocket_events": 0, "websocket_pcm_bytes": 0,
+    }
+    after = {
+        "backend": {"raw_messages": 3, "headers": {"11/200": 1, "202/200": 2},
+                    "talk_candidates": 0, "parsed_frames": 0,
+                    "forwarded_frames": 0, "reader_error": None},
+        "websocket_events": 0, "websocket_pcm_bytes": 0,
+    }
+    result = benchmark.mix_delta(before, after)
+    assert result["headers"] == {"202/200": 2}
+    assert result["raw_messages"] == 2
+    assert "no data-bearing talk ID 202" in result["interpretation"]
+    after["backend"].update({"talk_candidates": 2, "parsed_frames": 2, "forwarded_frames": 2})
+    assert "no mix events reached the CLI" in benchmark.mix_delta(before, after)["interpretation"]
+    after["websocket_events"] = 2
+    after["websocket_pcm_bytes"] = 4096
+    after["pcm_samples"] = 1024
+    after["pcm_squared_sum"] = 1024 * 1000 * 1000
+    after["pcm_non_silent_frames"] = 1
+    after["pcm_clipped_samples"] = 0
+    assert benchmark.mix_delta(before, after)["websocket_pcm_bytes"] == 4096
+    assert benchmark.mix_delta(before, after)["pcm_rms"] == 1000.0
+    assert benchmark.mix_delta(before, after)["pcm_non_silent_frames"] == 1
+    assert benchmark.mix_delta(before, after)["pcm_clipped_percent"] == 0.0
+
+
+def test_save_mix_wav_is_private_and_16khz(tmp_path) -> None:
+    import wave
+
+    path = tmp_path / "mix.wav"
+    benchmark.save_mix_wav(path, [b"\x00\x01" * 1024])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with wave.open(str(path), "rb") as recording:
+        assert recording.getframerate() == 16000
+        assert recording.getnchannels() == 1
+        assert recording.readframes(1024) == b"\x00\x01" * 1024
 
 
 @pytest.mark.asyncio
@@ -230,7 +300,7 @@ async def test_trial_records_detection_from_command_send(monkeypatch, tmp_path) 
 async def test_benchmark_writes_report_without_credentials(monkeypatch, tmp_path) -> None:
     class Client:
         def __init__(self, *args, **kwargs):
-            pass
+            self.snapshots = 0
 
         async def connect(self):
             pass
@@ -244,6 +314,15 @@ async def test_benchmark_writes_report_without_credentials(monkeypatch, tmp_path
 
         async def close(self):
             pass
+
+        async def mix_snapshot(self):
+            self.snapshots += 1
+            return {
+                "backend": {"raw_messages": self.snapshots - 1, "headers": {},
+                            "talk_candidates": 0, "parsed_frames": 0,
+                            "forwarded_frames": 0, "reader_error": None},
+                "websocket_events": 0, "websocket_pcm_bytes": 0,
+            }
 
     async def trial(*args):
         return {
@@ -266,5 +345,6 @@ async def test_benchmark_writes_report_without_credentials(monkeypatch, tmp_path
     report = json.loads(report_text)
     assert report["summary"]["mean_ms"] == 420.0
     assert report["runs"][0]["recording"] == "run-01.wav"
+    assert report["runs"][0]["native_mix"]["raw_messages"] == 1
     assert "private-ha-token" not in report_text
     assert "private-doorbell-password" not in report_text
