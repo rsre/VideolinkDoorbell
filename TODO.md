@@ -132,8 +132,8 @@ Still requires a verified camera/app capture or on-device test:
       queues, a follow-up live run showed 3 ms microphone acquisition, 79 ms
       PTT-to-first-frame time, 64 ms callback cadence, 4 ms WebSocket ack,
       0.1 ms HA queue wait, and zero browser/HA dropped frames. This supports
-      the current queue bounds for that run; acoustic quality remains to be
-      confirmed after the change.
+      the current queue bounds for that run. The user confirmed that speech
+      remained continuous and intelligible at the doorbell speaker.
 - [ ] Verify captured raw-frame benchmark performance on the installed Home
       Assistant/camera.
 
