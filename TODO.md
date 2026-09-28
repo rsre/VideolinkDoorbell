@@ -128,8 +128,12 @@ Still requires a verified camera/app capture or on-device test:
       WebRTC audio. In one native PTT run, microphone acquisition took 1166 ms
       of 1240 ms to the first captured frame. Browser and HA queues showed
       transient pressure (browser overflow, 190 ms HA queue wait); ADPCM
-      encoding took 3.7 ms and TCP write/drain 0.1 ms. The next live run should
-      compare dropped-frame counts and queue wait after tightening both queues.
+      encoding took 3.7 ms and TCP write/drain 0.1 ms. After tightening both
+      queues, a follow-up live run showed 3 ms microphone acquisition, 79 ms
+      PTT-to-first-frame time, 64 ms callback cadence, 4 ms WebSocket ack,
+      0.1 ms HA queue wait, and zero browser/HA dropped frames. This supports
+      the current queue bounds for that run; acoustic quality remains to be
+      confirmed after the change.
 - [ ] Verify captured raw-frame benchmark performance on the installed Home
       Assistant/camera.
 
@@ -158,7 +162,9 @@ Still requires a verified camera/app capture or on-device test:
       1024-sample frames; all 418 captured frame boundaries match.
 - [x] Add an independent regression test confirming consecutive DVI-4 blocks
       carry the encoder's predictor/index state into the next block header.
-- [ ] Measure microphone callback cadence and packet arrival cadence.
+- [x] Measure native microphone callback and official-app packet cadence.
+      The follow-up browser callback interval was 64 ms; the official app
+      packet capture averaged 63.8 ms (median 60.1 ms).
 - [x] Add CLI measurements for native audio TCP write duration and inter-frame
       cadence.
 - [x] Pace CLI frames against absolute 64 ms deadlines so TCP write time does
