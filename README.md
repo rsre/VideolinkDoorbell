@@ -31,6 +31,29 @@ Connection, credential, channel, stream, and certificate settings can be updated
 from the integration's **Reconfigure** action. Authentication failures prompt for
 replacement credentials without requiring the integration to be removed.
 
+## Doorbell button automations
+
+The integration creates a **Doorbell** event entity on the camera device. It
+receives visitor notifications through the camera's Baichuan service on TCP
+port 9000 and emits a `ring` event when the button is pressed. The listener
+runs even when the dashboard card and camera stream are closed.
+
+In **Settings → Automations & scenes**, add an **Event received** trigger,
+select the Doorbell event entity, and choose **Ring**. For YAML automations:
+
+```yaml
+triggers:
+  - trigger: event.received
+    target:
+      entity_id: event.your_videolink_doorbell
+    options:
+      event_type:
+        - ring
+```
+
+Replace the entity ID with the one created for your camera. Reolink's visitor
+signal must be available on the configured channel for rings to appear.
+
 ## Card
 
 The integration bundles and automatically registers the **Videolink Doorbell** dashboard card. Add it through the dashboard card picker, or use YAML:

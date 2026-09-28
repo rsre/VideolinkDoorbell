@@ -6,8 +6,8 @@
   "dependencies": ["frontend", "go2rtc", "http", "lovelace", "stream", "websocket_api"],
   "documentation": "https://github.com/rsre/VideolinkDoorbell",
   "integration_type": "device",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/rsre/VideolinkDoorbell/issues",
-  "requirements": [],
-  "version": "0.12.54"
+  "requirements": ["reolink-aio==0.21.15"],
+  "version": "0.12.55"
 }

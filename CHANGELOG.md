@@ -2,6 +2,15 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.55] - 2026-09-28
+
+### Added
+
+- Add a Doorbell event entity that emits Home Assistant's standard `ring`
+  event on visitor button presses received over Baichuan TCP push.
+- Keep the event listener active independently of the dashboard card and
+  document how to use the event in automations.
+
 ## [0.12.54] - 2026-09-25
 
 ### Fixed
