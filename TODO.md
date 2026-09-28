@@ -1,5 +1,28 @@
 # TODO
 
+## Official-app outgoing capture (2026-09-28)
+
+A private Wireshark capture of the Android emulator's official Reolink app
+contains 419 complete client-to-camera talk frames from one session. Every
+frame is a 683-byte MSG 202 message: 24-byte Baichuan header, 131-byte
+encrypted extension, and 528-byte media block. The previous serializer emitted
+677 bytes with a 125-byte extension and the same 528-byte media block, so the
+six-byte size difference was entirely in the extension. The app uses Baichuan
+message number 0 and a constant media-header final field of 2; our sender
+increments both fields. The app's media header is otherwise constant, and its
+ADPCM predictor/index carries correctly across all 418 frame boundaries.
+418 of 419 ADPCM bodies are distinct, confirming non-silent emulator input.
+Mean frame interval was 63.8 ms (median 60.1 ms). The capture is kept only in
+an owner-readable file under `/tmp`; no credentials or audio bytes are stored
+in this repository.
+
+The app's extension was decrypted locally using a same-session login nonce.
+It is TinyXML formatted with a spaced declaration, line breaks, `binaryData`
+before `channelId`, and a trailing newline. The serializer now emits this
+exact 131-byte XML and a 683-byte packet. A four-frame silent camera probe
+completed with mix frames before and after this extension-only change. The
+message-number and media-header field differences remain separate tests.
+
 ## Firmware parity audit (2026-09-24)
 
 Live benchmark on 2026-09-25 (`/tmp/videolink-mix-005`): 4/5 tone detections,
@@ -46,10 +69,11 @@ Still requires a verified camera/app capture or on-device test:
       camera probe and verify the corrected playback path by benchmark and
       live listening. Full-duplex echo behavior still depends on browser/device
       cancellation or headphones when mute-while-talking is disabled.
-- [ ] Compare complete outgoing official-app packets, including six-byte
-      extension/header difference, message number, ADPCM block and predictor
-      state. The present 677-byte outgoing packet is audibly working, but is
-      not byte-identical to the app's observed 683-byte packet.
+- [x] Reproduce the app's 131-byte extension XML byte-for-byte. The resulting
+      683-byte packet was accepted by the camera in a silent four-frame probe;
+      the media block remains 528 bytes.
+- [ ] Test the app's constant Baichuan message number 0 and constant media
+      header field 2 against our incrementing values, one change at a time.
 - [ ] Validate the SDK binary TalkAbility query (operation 2157) against the
       camera. The current XML query selects an ADPCM profile but is not the
       app's exact call path.
@@ -64,8 +88,9 @@ Still requires a verified camera/app capture or on-device test:
 
 ## Native talk parity and latency
 
-- [ ] Capture a known-good official-app talk packet and compare the native
-      media header and ADPCM payload byte-for-byte.
+- [x] Capture complete, non-silent official-app talk packets and compare the
+      native media header and ADPCM predictor/index continuity. The compressed
+      audio bytes differ because the app and integration captured different PCM.
 - [x] Add an analyzer for the existing official-app relay trace. It confirms
       683-byte writes, a stable 24-byte Baichuan header, and approximately
       64 ms packet cadence; payload bytes were intentionally not retained.
@@ -80,8 +105,8 @@ Still requires a verified camera/app capture or on-device test:
 - [ ] Verify the native ADPCM media-header fields independently:
       `01wb` magic, block size, cumulative size, sample count, index, and
       predictor.
-- [ ] Verify ADPCM predictor/index state across consecutive 1024-sample
-      frames.
+- [x] Verify the official app's ADPCM predictor/index state across consecutive
+      1024-sample frames; all 418 captured frame boundaries match.
 - [x] Add an independent regression test confirming consecutive DVI-4 blocks
       carry the encoder's predictor/index state into the next block header.
 - [ ] Measure microphone callback cadence and packet arrival cadence.
@@ -91,13 +116,13 @@ Still requires a verified camera/app capture or on-device test:
       not accumulate into the audio cadence.
 - [ ] Add timestamps for capture, Home Assistant/WebSocket enqueue, TCP send,
       camera response, and audible playback.
-- [ ] Implement the SDK-equivalent mix-audio callback before selecting
-      `mixAudioStream`; receive, split, and AEC-process the far/near PCM
-      buffers, then verify the result is used by the integration. The HA
-      subscription is established immediately after open acknowledgement;
-      SDK AEC parity remains.
-- [ ] Wire verified AEC-cleaned mix callback PCM into HA playback during native
-      talk. The earlier synthetic callback path did not decode camera wire PCM.
+- [x] Decode the camera's mix container, verify far/near channel orientation,
+      and play validated far-end PCM in the card. The HA subscription is
+      established immediately after open acknowledgement; WebRTC remains the
+      fallback if native mix is not playable.
+- [ ] Evaluate SDK-style AEC for the local near-end microphone signal using
+      far-end audio as reference. This is separate from incoming mix playback;
+      JNI/model parity and browser capture/reference alignment remain unverified.
 - [x] Confirm native stop/close behavior and recovery after interruption;
       verified across three consecutive camera sessions.
 

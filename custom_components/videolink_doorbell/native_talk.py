@@ -457,9 +457,15 @@ def serialize_talk_audio_message(
     encrypt_xml: Callable[[int, bytes], bytes] | None = None,
 ) -> bytes:
     """Build one binary MSG_ID_TALK message from a DVI-4 ADPCM block."""
-    extension = XML_DECLARATION + (
-        f'<Extension version="1.1"><channelId>{channel_id}</channelId><binaryData>1</binaryData></Extension>'.encode()
-    )
+    # Match the official app's TinyXML output byte-for-byte. The line breaks,
+    # declaration space, and element order account for its 131-byte extension.
+    extension = b"".join((
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b'<Extension version="1.1">\n'
+        b'<binaryData>1</binaryData>\n',
+        f'<channelId>{channel_id}</channelId>\n'.encode(),
+        b'</Extension>\n',
+    ))
     if encrypt_xml is not None:
         extension = encrypt_xml(channel_id, extension)
     return serialize_talk_message(

@@ -25,7 +25,8 @@ For cameras with their factory/self-signed certificate, leave **Verify HTTPS cer
 
 Select `main` for the console's Clear stream or `sub` for Fluent.
 
-RTSP must be enabled for two-way audio, but video continues to use FLV.
+RTSP must be enabled for the `rtsp` talk mode. The `native` talk mode uses the
+camera's Baichuan service on TCP port 9000; video continues to use FLV.
 
 Connection, credential, channel, stream, and certificate settings can be updated
 from the integration's **Reconfigure** action. Authentication failures prompt for
@@ -81,6 +82,11 @@ Home Assistant must be used over HTTPS (or localhost) because browsers block mic
   feedback, then resumes listening when native push-to-talk ends. Set it to
   `false` for simultaneous listening and talking only if your browser/device
   echo cancellation or headphones prevent feedback.
+- In native mode, incoming audio uses the decoded camera-microphone channel of
+  the Baichuan mix when playable frames arrive. The card falls back to the
+  WebRTC camera-audio track if native mix is unavailable, silent at startup, or
+  stops. The app's proprietary AEC is not part of this playback path; see
+  [AEC.md](AEC.md) for what reproducing it would involve.
 - `video_fit` controls the video layout (default is `contain`):
   - `contain` scales the entire frame with letterboxing,
   - `cover` crops it,
@@ -166,18 +172,19 @@ after the run. If your Home Assistant login uses MFA or another provider, set
 Each run records `run-XX.wav`, and `report.json` contains every detection,
 failure, summary latency, an approximate tone-continuity score, and native-mix
 receive counters. The counters distinguish no camera messages, data-bearing
-talk messages, decoded PCM frames, and missing WebSocket events. Decoding is
-currently disabled for the unverified camera wire body. Deploy
-this version of the integration to Home Assistant and restart it before using
-the new diagnostics command. Listen to
+talk messages, decoded PCM frames, and missing WebSocket events. The observed
+`202/200` mix container is decrypted and validated before its camera-microphone
+PCM is used; unknown or malformed payloads are not played. Deploy this version
+of the integration to Home Assistant and restart it before using the new
+diagnostics command. Listen to
 the recordings as well as reading the numbers: a missed detection or a gap in
 the tone score may mean the doorbell's echo cancellation hid the tone from its
 own microphone.
 
 The `aes_extension_xml_frames` and `aes_payload_media_magic_frames` counters
-are non-playback probes: they only count recognizable headers after trying the
-session's AES-CFB key. A zero does not establish that no audio was received;
-it may use a different wrapper or encryption mode.
+are diagnostic probes for recognizable headers. Use the decoded-frame and
+rejected-frame counters to assess native mix playback; a zero in either probe
+counter does not establish that no audio was received.
 
 For protocol inspection, add `--dump-raw-received`. The benchmark then writes
 `native-receives.jsonl` in the output directory, with one record
@@ -194,6 +201,10 @@ the same private JSONL file. It implies raw capture. These bytes may contain
 audio; do not share the file publicly. No AES key or full decrypted payload is
 written. This option adds a small amount of per-frame work, so use the normal
 benchmark without it for final latency measurements.
+
+Add `--save-mix-wav` to save separate, owner-only WAV files of the decoded
+native incoming audio. These may contain private conversations; listen locally
+and do not share them publicly.
 
 The reported interval starts when the test sends Home Assistant's WebSocket
 tone command and ends when the tone is detected in decoded doorbell RTSP audio.

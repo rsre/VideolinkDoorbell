@@ -338,7 +338,15 @@ def test_talk_audio_message_contains_binary_media() -> None:
     data = b"\x00\x00\x00\x00" + b"\x00" * 512
     message = native_talk.serialize_talk_audio_message(data, msg_num=8)
     assert int.from_bytes(message[4:8], "little") == native_talk.MSG_ID_TALK
-    assert b"<binaryData>1</binaryData>" in message
+    header, extension, _ = native_talk.split_baichuan_message(message)
+    assert header.payload_offset == 131
+    assert extension == (
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b'<Extension version="1.1">\n'
+        b'<binaryData>1</binaryData>\n'
+        b'<channelId>0</channelId>\n'
+        b'</Extension>\n'
+    )
     assert b"0\x31wb" in message
 
 
@@ -348,7 +356,7 @@ def test_talk_audio_extension_can_be_encrypted() -> None:
         msg_num=8,
         encrypt_xml=lambda _channel, payload: b"X" * len(payload),
     )
-    assert message[24:149] == b"X" * 125
+    assert message[24:155] == b"X" * 131
 
 
 def test_default_talk_profile_matches_doorbell_fallback() -> None:
