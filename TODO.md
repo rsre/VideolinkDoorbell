@@ -134,8 +134,21 @@ Still requires a verified camera/app capture or on-device test:
       0.1 ms HA queue wait, and zero browser/HA dropped frames. This supports
       the current queue bounds for that run. The user confirmed that speech
       remained continuous and intelligible at the doorbell speaker.
-- [ ] Verify captured raw-frame benchmark performance on the installed Home
-      Assistant/camera.
+- [x] Verify captured raw-frame benchmark performance on the installed Home
+      Assistant/camera. A five-run benchmark with raw capture detected the
+      440 Hz tone in all five runs. Each measured 1.984-second tone window
+      had 100% presence and no detected gap. The mean time from HA tone
+      request to RTSP microphone detection was 1469.1 ms (range 1434.5 to
+      1496.3 ms); this includes speaker, microphone, RTSP, and FFmpeg delay
+      and excludes browser microphone startup. All 902 raw received frames
+      were captured with zero raw-capture drops; each run decoded native mix
+      frames with zero rejected frames. A matching five-run set without raw
+      capture also detected 5/5 tones, with 100% presence, no gaps, and zero
+      rejected mix frames; its mean was 1431.6 ms (range 1392.8 to 1523.3 ms).
+      The 37.5 ms difference between means is smaller than the observed
+      run-to-run spread and does not establish a raw-capture latency cost.
+      Private recordings and reports remain under the owner-readable
+      `/tmp/videolink-acoustic-20260929-live-001` and `-002` directories.
 
 ## Native talk parity and latency
 
