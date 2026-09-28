@@ -106,8 +106,11 @@ Still requires a verified camera/app capture or on-device test:
       The Python LMS filter is not model parity and has been removed from the
       incoming playback path; do not re-enable it without channel-direction
       and quality validation.
-- [ ] Test session open/close at PTT boundaries against the current pre-open
-      design. Pre-open improves response time but differs from the app.
+- [x] Test session open/stop at PTT boundaries on one logged-in connection.
+      Three silent cycles succeeded after fixing a duplicate mix-reader task;
+      open acknowledgements took 55.5, 106.2, and 68.3 ms. Keep the card's
+      pre-open design to avoid this delay on each press. Browser timing remains
+      a separate measurement.
 - [ ] Verify native `recvonly` WebRTC negotiation and captured raw-frame
       benchmark performance on the installed Home Assistant/camera.
 

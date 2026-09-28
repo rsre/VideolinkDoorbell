@@ -439,6 +439,43 @@ async def test_session_audio_uses_official_app_header_fields() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_reopening_talk_reuses_mix_reader() -> None:
+    session = native_talk.NativeTalkSession("camera", "user", "password")
+    session._logged_in = True
+
+    class Client:
+        number = 0
+
+        def next_message_number(self):
+            self.number += 1
+            return self.number
+
+        async def send(self, _message):
+            return None
+
+        async def receive(self):
+            await asyncio.Future()
+
+        async def close(self):
+            return None
+
+    async def acknowledge(_message_id):
+        return SimpleNamespace(message_id=201, response_code=200), b"", b""
+
+    session.client = Client()
+    session._receive_response = acknowledge
+    config = native_talk.TalkConfig(audio_stream_mode="mixAudioStream")
+    try:
+        await session.open_talk(config)
+        first_reader = session._mix_reader_task
+        await session.open_talk(config)
+        assert session._mix_reader_task is first_reader
+        assert first_reader is not None and not first_reader.done()
+    finally:
+        await session.close()
+
+
 def test_default_talk_profile_matches_doorbell_fallback() -> None:
     profile = native_talk.TalkAbility()
     assert profile.sample_rate == 16_000

@@ -888,7 +888,7 @@ class NativeTalkSession:
         self._audio_samples_per_frame = config.length_per_encoder
         self._audio_frame_duration = config.length_per_encoder / config.sample_rate
         self._next_audio_send_at = None
-        if config.audio_stream_mode == "mixAudioStream":
+        if config.audio_stream_mode == "mixAudioStream" and self._mix_reader_task is None:
             self._mix_reader_error = None
             self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
 
