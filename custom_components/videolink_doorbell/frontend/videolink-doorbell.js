@@ -45,7 +45,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeMixFramesScheduled = 0;
     this._nativePcm = [];
     this._nativePendingSends = new Set();
-    this._nativeQueueLimit = 4;
+    this._nativeQueueLimit = 2;
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
     this._nativeDiagnosticsLastPollAt = undefined;
@@ -916,6 +916,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnostics.nativeFrames = 0;
     this._diagnostics.nativeQueueDepth = 0;
     this._diagnostics.nativeQueueOverflow = false;
+    this._diagnostics.nativeBrowserDroppedFrames = 0;
     this._diagnostics.nativeQueueWaitMs = undefined;
     this._diagnostics.nativeCallbackIntervalMs = undefined;
     this._diagnostics.nativeWsAckMs = undefined;
@@ -1003,6 +1004,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._nativePendingSends.size >= this._nativeQueueLimit) {
       // Discard this live frame rather than queue seconds of stale speech.
       this._diagnostics.nativeQueueOverflow = true;
+      this._diagnostics.nativeBrowserDroppedFrames += 1;
       return;
     }
     const bytes = new Uint8Array(data);
@@ -1491,6 +1493,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Native dispatch wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
       `Native queue depth: ${value(this._diagnostics.nativeQueueDepth)}`,
       this._diagnostics.nativeQueueOverflow ? "Native queue overflow: yes" : "",
+      `Browser dropped native frames: ${value(this._diagnostics.nativeBrowserDroppedFrames)}`,
       `Native WebSocket ack: ${ms(this._diagnostics.nativeWsAckMs)}`,
       this._diagnostics.nativeTalkError ? `Native talk error: ${this._diagnostics.nativeTalkError}` : "",
       this._diagnostics.microphoneError ? `Microphone error: ${this._diagnostics.microphoneError}` : "",

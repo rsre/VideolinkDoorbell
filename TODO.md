@@ -122,8 +122,16 @@ Still requires a verified camera/app capture or on-device test:
       open acknowledgements took 55.5, 106.2, and 68.3 ms. Keep the card's
       pre-open design to avoid this delay on each press. Browser timing remains
       a separate measurement.
-- [ ] Verify native `recvonly` WebRTC negotiation and captured raw-frame
-      benchmark performance on the installed Home Assistant/camera.
+- [x] Verify native `recvonly` WebRTC negotiation on the installed Home
+      Assistant/camera. The live offer/answer/negotiated directions were
+      `recvonly / sendonly / recvonly`, with inbound packets and no outbound
+      WebRTC audio. In one native PTT run, microphone acquisition took 1166 ms
+      of 1240 ms to the first captured frame. Browser and HA queues showed
+      transient pressure (browser overflow, 190 ms HA queue wait); ADPCM
+      encoding took 3.7 ms and TCP write/drain 0.1 ms. The next live run should
+      compare dropped-frame counts and queue wait after tightening both queues.
+- [ ] Verify captured raw-frame benchmark performance on the installed Home
+      Assistant/camera.
 
 ## Native talk parity and latency
 

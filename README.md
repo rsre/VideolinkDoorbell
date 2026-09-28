@@ -114,6 +114,12 @@ Home Assistant clocks. WebSocket acknowledgement confirms enqueueing, not
 camera playback. To measure audible end-to-end delay, use the acoustic
 benchmark below or an external recording of the doorbell speaker.
 
+The native browser and Home Assistant queues each retain at most two 64 ms
+frames. When a queue fills, frames are dropped to keep latency bounded; the
+debug panel counts drops on each side. The microphone startup time shown
+by `Mic permission` includes browser device acquisition and may dominate the
+first press.
+
 ## Versions
 
 Releases use semantic versioning (`MAJOR.MINOR.PATCH`). The integration version in `manifest.json` always matches the GitHub release tag without its leading `v`.

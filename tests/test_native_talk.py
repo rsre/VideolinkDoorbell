@@ -676,8 +676,8 @@ async def test_native_audio_queue_keeps_recent_frames(monkeypatch) -> None:
     release.set()
     await asyncio.gather(*completions)
     await channel.stop()
-    assert transport.sent == [b"0", b"2", b"3", b"4", b"5"]
-    assert channel.dropped_audio_frames == 1
+    assert transport.sent == [b"0", b"4", b"5"]
+    assert channel.dropped_audio_frames == 3
     assert channel.last_queue_wait_ms is not None
 
 

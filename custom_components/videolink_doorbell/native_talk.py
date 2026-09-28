@@ -1176,8 +1176,8 @@ class NativeTalkSession:
 class NativeTalkChannel:
     """High-level native-talk session with negotiated audio and lifecycle state."""
 
-    AUDIO_QUEUE_MAXSIZE = 4
-    MAX_AUDIO_AGE_SECONDS = 0.25
+    AUDIO_QUEUE_MAXSIZE = 2
+    MAX_AUDIO_AGE_SECONDS = 0.128
 
     def __init__(
         self,

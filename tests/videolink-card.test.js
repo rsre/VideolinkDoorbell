@@ -452,3 +452,15 @@ test("native audio diagnostics read the actual offer and answer directions", () 
   assert.equal(card._audioSdpDirection(answer), "sendonly");
   assert.equal(card._audioSdpDirection("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly\r\n"), undefined);
 });
+
+test("native browser queue counts frames dropped during WebSocket stalls", () => {
+  const card = new CardUnderTest();
+  card._nativeTalking = true;
+  card._nativePendingSends.add(Promise.resolve());
+  card._nativePendingSends.add(Promise.resolve());
+  card._diagnostics.nativeBrowserDroppedFrames = 0;
+  card._handleNativePcm(new ArrayBuffer(2048));
+  assert.equal(card._diagnostics.nativeQueueOverflow, true);
+  assert.equal(card._diagnostics.nativeBrowserDroppedFrames, 1);
+  assert.equal(card._nativePendingSends.size, 2);
+});
