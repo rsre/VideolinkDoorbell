@@ -28,7 +28,9 @@ The decoded native mix also had a silent near-end channel with both the new
 and previous incrementing header values, including after closing the app.
 This does not isolate a header regression. Audio delivery with the final fields
 was subsequently confirmed in Home Assistant; the standalone probe discrepancy
-remains unexplained.
+remains unexplained. A later immediate-start 16-frame tone probe detected a
+strong 440 Hz signal in native mix near-end (amplitude about 10,030), showing
+that a fixed warm-up delay was not needed in that run.
 
 The same app session resolves the SDK TalkAbility operation `2157` to a
 Baichuan MSG 10 request with message number 0, a 125-byte encrypted XML
@@ -94,7 +96,8 @@ Still requires a verified camera/app capture or on-device test:
       fields. The user verified working audio after the change.
 - [ ] Explain why the standalone tone probe received RTSP microphone audio but
       detected no tone and showed silent native mix near-end for both new and
-      old header fields.
+      old header fields. A later immediate-start probe did detect the tone in
+      native mix near-end, so the failure is intermittent.
 - [x] Harden login-negotiation XML recognition: require a parseable XML
       document before accepting a decrypted candidate. This prevents random
       encrypted angle brackets from hiding the nonce. Three fresh logins and
