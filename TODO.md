@@ -9,7 +9,7 @@ encrypted extension, and 528-byte media block. The previous serializer emitted
 677 bytes with a 125-byte extension and the same 528-byte media block, so the
 six-byte size difference was entirely in the extension. The app uses Baichuan
 message number 0 and a constant media-header final field of 2; our sender
-increments both fields. The app's media header is otherwise constant, and its
+now matches both. The app's media header is otherwise constant, and its
 ADPCM predictor/index carries correctly across all 418 frame boundaries.
 418 of 419 ADPCM bodies are distinct, confirming non-silent emulator input.
 Mean frame interval was 63.8 ms (median 60.1 ms). The capture is kept only in
@@ -20,8 +20,15 @@ The app's extension was decrypted locally using a same-session login nonce.
 It is TinyXML formatted with a spaced declaration, line breaks, `binaryData`
 before `channelId`, and a trailing newline. The serializer now emits this
 exact 131-byte XML and a 683-byte packet. A four-frame silent camera probe
-completed with mix frames before and after this extension-only change. The
-message-number and media-header field differences remain separate tests.
+completed with mix frames before and after this extension-only change. Two
+further four-frame probes isolated message number 0 and media field 2; the
+camera accepted both, and packet captures verified the final `(0, 2)` fields.
+A later one-second tone probe received RTSP audio but did not detect the tone.
+The decoded native mix also had a silent near-end channel with both the new
+and previous incrementing header values, including after closing the app.
+This does not isolate a header regression. Audio delivery with the final fields
+was subsequently confirmed in Home Assistant; the standalone probe discrepancy
+remains unexplained.
 
 ## Firmware parity audit (2026-09-24)
 
@@ -72,8 +79,17 @@ Still requires a verified camera/app capture or on-device test:
 - [x] Reproduce the app's 131-byte extension XML byte-for-byte. The resulting
       683-byte packet was accepted by the camera in a silent four-frame probe;
       the media block remains 528 bytes.
-- [ ] Test the app's constant Baichuan message number 0 and constant media
-      header field 2 against our incrementing values, one change at a time.
+- [x] Test the app's constant Baichuan message number 0 and constant media
+      header field 2, one change at a time. Both silent probes succeeded; the
+      final wire capture showed four `(0, 2)` talk frames.
+- [x] Confirm Home Assistant audio delivery with the final `(0, 2)` header
+      fields. The user verified working audio after the change.
+- [ ] Explain why the standalone tone probe received RTSP microphone audio but
+      detected no tone and showed silent native mix near-end for both new and
+      old header fields.
+- [ ] Harden login-negotiation XML recognition: one probe selected random
+      encrypted bytes containing `<` and `>` before applying BCEncrypt, then
+      failed to find the nonce. An immediate retry succeeded.
 - [ ] Validate the SDK binary TalkAbility query (operation 2157) against the
       camera. The current XML query selects an ADPCM profile but is not the
       app's exact call path.

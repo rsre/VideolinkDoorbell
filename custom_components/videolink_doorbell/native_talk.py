@@ -34,6 +34,7 @@ MSG_ID_TALK_STOP = 11
 MSG_ID_TALK_ABILITY = 10
 BCMEDIA_ADPCM_MAGIC = 0x62773130
 BCMEDIA_ADPCM_DATA_MAGIC = 0x0100
+BCMEDIA_APP_HEADER_FIELD = 2  # Observed constant; its meaning is not verified.
 XML_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
 
 
@@ -366,13 +367,13 @@ def serialize_adpcm_media(data: bytes) -> bytes:
         raise ValueError("ADPCM data must include its 4-byte predictor header")
     if (len(data) - 4) % 2:
         raise ValueError("ADPCM block payload must have an even byte count")
-    return serialize_adpcm_media_with_sequence(data, sequence=0)
+    return serialize_adpcm_media_with_field(data, field_value=0)
 
 
-def serialize_adpcm_media_with_sequence(data: bytes, *, sequence: int) -> bytes:
-    """Serialize one ADPCM block with the camera-required sequence field."""
-    if not 0 <= sequence <= 0xFFFF:
-        raise ValueError("ADPCM sequence must fit in uint16")
+def serialize_adpcm_media_with_field(data: bytes, *, field_value: int) -> bytes:
+    """Serialize one ADPCM block with the observed final media-header word."""
+    if not 0 <= field_value <= 0xFFFF:
+        raise ValueError("ADPCM media-header field must fit in uint16")
     payload_size = len(data) + 4
     media = struct.pack(
         "<IHHHH",
@@ -380,7 +381,7 @@ def serialize_adpcm_media_with_sequence(data: bytes, *, sequence: int) -> bytes:
         payload_size,
         payload_size,
         BCMEDIA_ADPCM_DATA_MAGIC,
-        sequence,
+        field_value,
     ) + data
     return media + bytes((-payload_size) % 8)
 
@@ -453,7 +454,7 @@ def serialize_talk_audio_message(
     *,
     msg_num: int,
     channel_id: int = 0,
-    sequence: int = 0,
+    media_field: int = BCMEDIA_APP_HEADER_FIELD,
     encrypt_xml: Callable[[int, bytes], bytes] | None = None,
 ) -> bytes:
     """Build one binary MSG_ID_TALK message from a DVI-4 ADPCM block."""
@@ -473,7 +474,7 @@ def serialize_talk_audio_message(
         msg_num=msg_num,
         channel_id=channel_id,
         extension=extension,
-        payload=serialize_adpcm_media_with_sequence(adpcm_data, sequence=sequence),
+        payload=serialize_adpcm_media_with_field(adpcm_data, field_value=media_field),
     )
 
 
@@ -671,7 +672,6 @@ class NativeTalkSession:
         self._aes_key: bytes | None = None
         self._encryption_mode = 0
         self._logged_in = False
-        self._audio_sequence = 0
         self._audio_encoder = Dvi4Encoder()
         self._audio_send_lock = asyncio.Lock()
         self._audio_samples_per_frame = SAMPLES_PER_FRAME
@@ -1073,13 +1073,11 @@ class NativeTalkSession:
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
         async with self._audio_send_lock:
-            self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
             await self.client.send(
                 serialize_talk_audio_message(
                     adpcm_data,
-                    msg_num=self.client.next_message_number(),
+                    msg_num=0,
                     channel_id=self.channel,
-                    sequence=self._audio_sequence,
                     encrypt_xml=self._encrypt_xml,
                 )
             )
@@ -1101,13 +1099,11 @@ class NativeTalkSession:
                 self._next_audio_send_at = now
             await asyncio.sleep(max(0.0, self._next_audio_send_at - now))
             encoded = self._audio_encoder.encode_pcm16le(pcm16le)
-            self._audio_sequence = (self._audio_sequence + 1) & 0xFFFF
             await self.client.send(
                 serialize_talk_audio_message(
                     encoded,
-                    msg_num=self.client.next_message_number(),
+                    msg_num=0,
                     channel_id=self.channel,
-                    sequence=self._audio_sequence,
                     encrypt_xml=self._encrypt_xml,
                 )
             )

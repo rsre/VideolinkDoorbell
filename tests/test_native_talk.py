@@ -359,6 +359,35 @@ def test_talk_audio_extension_can_be_encrypted() -> None:
     assert message[24:155] == b"X" * 131
 
 
+@pytest.mark.asyncio
+async def test_session_audio_uses_official_app_header_fields() -> None:
+    session = native_talk.NativeTalkSession("camera", "user", "password")
+    session._logged_in = True
+
+    class Client:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, message):
+            self.sent.append(message)
+
+    session.client = Client()
+    await session.send_audio(bytes(516))
+    await session.send_pcm(bytes(2048))
+
+    assert len(session.client.sent) == 2
+    for message in session.client.sent:
+        header, extension, media = native_talk.split_baichuan_message(message)
+        assert len(message) == 683
+        assert header.message_id == 202
+        assert header.message_number == 0
+        assert len(extension) == 131
+        assert struct.unpack_from("<IHHHH", media) == (
+            native_talk.BCMEDIA_ADPCM_MAGIC, 520, 520,
+            native_talk.BCMEDIA_ADPCM_DATA_MAGIC, 2,
+        )
+
+
 def test_default_talk_profile_matches_doorbell_fallback() -> None:
     profile = native_talk.TalkAbility()
     assert profile.sample_rate == 16_000
