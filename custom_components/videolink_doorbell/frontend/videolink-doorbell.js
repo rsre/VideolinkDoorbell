@@ -48,6 +48,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativeQueueLimit = 4;
     this._nativeFrameCount = 0;
     this._nativeLastCaptureAt = undefined;
+    this._nativeDiagnosticsLastPollAt = undefined;
     this._nativeTalking = false;
     this._toneTesting = false;
     this._sessionId = undefined;
@@ -526,6 +527,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         offerToReceiveVideo: !this._audioOnly,
       });
       await peer.setLocalDescription(this._setLowLatencyAudioPacketization(offer));
+      this._diagnostics.localAudioDirection = this._audioSdpDirection(peer.localDescription?.sdp);
       if (!this._isCurrentConnection(generation) || this._peer !== peer) {
         peer.close();
         return;
@@ -661,6 +663,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       }
     } else if (event.type === "answer") {
       await this._peer.setRemoteDescription({ type: "answer", sdp: event.answer });
+      this._diagnostics.remoteAudioDirection = this._audioSdpDirection(event.answer);
       for (const candidate of this._pendingRemoteCandidates.splice(0)) {
         await this._peer.addIceCandidate(candidate);
       }
@@ -674,6 +677,17 @@ class VideolinkDoorbellCard extends HTMLElement {
       await this._cleanup(false);
       this._scheduleReconnect();
     }
+  }
+
+  _audioSdpDirection(sdp) {
+    if (!sdp) return undefined;
+    const lines = sdp.split(/\r?\n/);
+    let inAudio = false;
+    for (const line of lines) {
+      if (line.startsWith("m=")) inAudio = line.startsWith("m=audio ");
+      else if (inAudio && /^a=(sendrecv|sendonly|recvonly|inactive)$/.test(line)) return line.slice(2);
+    }
+    return undefined;
   }
 
   async _handleLocalCandidate(candidate, generation) {
@@ -905,6 +919,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._diagnostics.nativeQueueWaitMs = undefined;
     this._diagnostics.nativeCallbackIntervalMs = undefined;
     this._diagnostics.nativeWsAckMs = undefined;
+    this._diagnostics.nativeCaptureToWsAckMs = undefined;
+    this._diagnostics.nativePttToFirstFrameMs = undefined;
     this._nativeTalking = true;
     this._nativeMixTalkStartedAt = performance.now();
     this._nativeMixTalkStartFrameCount = this._nativeMixFramesReceived;
@@ -976,6 +992,9 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (!this._nativeTalking || !(data instanceof ArrayBuffer)) return;
     const capturedAt = performance.now();
     this._nativeFrameCount += 1;
+    if (this._nativeFrameCount === 1 && this._diagnostics.micRequestedAt !== undefined) {
+      this._diagnostics.nativePttToFirstFrameMs = capturedAt - this._diagnostics.micRequestedAt;
+    }
     this._diagnostics.nativeFrames = this._nativeFrameCount;
     if (this._nativeLastCaptureAt !== undefined) {
       this._diagnostics.nativeCallbackIntervalMs = capturedAt - this._nativeLastCaptureAt;
@@ -993,6 +1012,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     const encoded = btoa(binary);
     const sentAt = performance.now();
+    this._diagnostics.nativeCaptureToDispatchMs = sentAt - capturedAt;
     this._diagnostics.nativeQueueWaitMs = 0;
     const request = this._hass.callWS({
       type: "videolink_doorbell/native_talk",
@@ -1000,8 +1020,10 @@ class VideolinkDoorbellCard extends HTMLElement {
       entity_id: this._config.entity,
       token: this._nativeToken,
       pcm: encoded,
-    }).then(() => {
+    }).then((result) => {
       this._diagnostics.nativeWsAckMs = performance.now() - sentAt;
+      this._diagnostics.nativeCaptureToWsAckMs = performance.now() - capturedAt;
+      this._diagnostics.nativeHaReceiveToEnqueueMs = result?.ha_receive_to_enqueue_ms;
     }).catch((error) => {
       this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
     });
@@ -1031,6 +1053,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         claim: true,
       });
       this._nativeToken = config.token;
+      this._nativeDiagnosticsLastPollAt = undefined;
       this._nativeSampleRate = Number(config?.sample_rate) || 16000;
       this._nativeFrameSamples = Number(config?.samples_per_frame) || 1024;
       this._nativeMixFramesReceived = 0;
@@ -1317,6 +1340,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._collectingStats = true;
     try {
       const stats = await this._peer.getStats();
+      this._diagnostics.negotiatedAudioDirection = (this._peer.getTransceivers?.() || [])
+        .find((transceiver) => transceiver.receiver?.track?.kind === "audio")?.currentDirection;
       const reports = [...stats.values()];
       const inbound = reports.find((report) => report.type === "inbound-rtp" && (report.kind || report.mediaType) === "audio");
       const outbound = reports.find((report) => report.type === "outbound-rtp" && (report.kind || report.mediaType) === "audio");
@@ -1374,6 +1399,32 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.outboundCodec = outboundCodec?.mimeType;
       this._diagnostics.outboundCodecClockRate = outboundCodec?.clockRate;
       this._diagnostics.outboundCodecChannels = outboundCodec?.channels;
+      if (this._config.talk_mode === "native" && this._nativeToken
+          && (this._nativeDiagnosticsLastPollAt === undefined
+            || statsNow - this._nativeDiagnosticsLastPollAt >= 1000)) {
+        this._nativeDiagnosticsLastPollAt = statsNow;
+        const token = this._nativeToken;
+        try {
+          const native = await this._hass.callWS({
+            type: "videolink_doorbell/native_talk",
+            action: "diagnostics",
+            entity_id: this._config.entity,
+            token,
+          });
+          if (token === this._nativeToken) {
+            this._diagnostics.nativeMetricsError = undefined;
+            this._diagnostics.nativeHaQueueDepth = native.audio_queue_depth;
+            this._diagnostics.nativeHaQueueWaitMs = native.audio_queue_wait_ms;
+            this._diagnostics.nativeHaEncodeMs = native.audio_encode_ms;
+            this._diagnostics.nativeHaTcpWriteMs = native.audio_tcp_write_ms;
+            this._diagnostics.nativeHaDroppedFrames = native.audio_dropped_frames;
+          }
+        } catch (error) {
+          if (token === this._nativeToken) {
+            this._diagnostics.nativeMetricsError = this._formatNativeTalkError(error);
+          }
+        }
+      }
       this._updateDiagnosticsView();
     } catch (error) {
       this._diagnostics.statsError = error?.message || String(error);
@@ -1397,6 +1448,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Phase: ${this._diagnostics.phase || "idle"}`,
       `Incoming audio source: ${this._incomingAudioSource()}`,
       `Outgoing talk path: ${this._config?.talk_mode === "native" ? "Native Baichuan" : "WebRTC / RTSP backchannel"}`,
+      `WebRTC audio direction (offer/answer/negotiated): ${value(this._diagnostics.localAudioDirection)} / ${value(this._diagnostics.remoteAudioDirection)} / ${value(this._diagnostics.negotiatedAudioDirection)}`,
       `Audio output: ${this._muted ? "muted" : "unmuted"}`,
       `Native mix advertised: ${this._nativeMixAvailable ? "yes" : "no"}`,
       `Native mix frames: ${this._nativeMixFramesReceived} received, ${this._nativeMixFramesScheduled} scheduled`,
@@ -1426,6 +1478,16 @@ class VideolinkDoorbellCard extends HTMLElement {
       `Track attached to first packet: ${ms(this._diagnostics.firstOutboundPacketMs)}`,
       `Native audio frames: ${value(this._diagnostics.nativeFrames)}`,
       `Native capture interval: ${ms(this._diagnostics.nativeCallbackIntervalMs)}`,
+      `PTT to first native frame: ${ms(this._diagnostics.nativePttToFirstFrameMs)}`,
+      `Native capture to WS dispatch: ${ms(this._diagnostics.nativeCaptureToDispatchMs)}`,
+      `Native capture to HA enqueue ack: ${ms(this._diagnostics.nativeCaptureToWsAckMs)}`,
+      `HA receive to enqueue: ${ms(this._diagnostics.nativeHaReceiveToEnqueueMs)}`,
+      `HA queue wait: ${ms(this._diagnostics.nativeHaQueueWaitMs)}`,
+      `HA ADPCM encode: ${ms(this._diagnostics.nativeHaEncodeMs)}`,
+      `HA TCP write: ${ms(this._diagnostics.nativeHaTcpWriteMs)}`,
+      `HA queue depth: ${value(this._diagnostics.nativeHaQueueDepth)}`,
+      `HA dropped audio frames: ${value(this._diagnostics.nativeHaDroppedFrames)}`,
+      this._diagnostics.nativeMetricsError ? `HA timing error: ${this._diagnostics.nativeMetricsError}` : "",
       `Native dispatch wait: ${ms(this._diagnostics.nativeQueueWaitMs)}`,
       `Native queue depth: ${value(this._diagnostics.nativeQueueDepth)}`,
       this._diagnostics.nativeQueueOverflow ? "Native queue overflow: yes" : "",

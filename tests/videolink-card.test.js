@@ -443,3 +443,12 @@ test("native mode receives WebRTC audio without sending a keepalive track", asyn
     global.MediaStream = previousStream;
   }
 });
+
+test("native audio diagnostics read the actual offer and answer directions", () => {
+  const card = new CardUnderTest();
+  const offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly\r\n";
+  const answer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n";
+  assert.equal(card._audioSdpDirection(offer), "recvonly");
+  assert.equal(card._audioSdpDirection(answer), "sendonly");
+  assert.equal(card._audioSdpDirection("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly\r\n"), undefined);
+});

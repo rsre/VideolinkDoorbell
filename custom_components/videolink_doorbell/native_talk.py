@@ -701,6 +701,8 @@ class NativeTalkSession:
         self._audio_samples_per_frame = SAMPLES_PER_FRAME
         self._audio_frame_duration = FRAME_DURATION_MS / 1000
         self._next_audio_send_at: float | None = None
+        self.last_encode_ms: float | None = None
+        self.last_tcp_write_ms: float | None = None
         self.trace = trace
         self.mix_frame_callback = mix_frame_callback
         self.raw_frame_callback: Callable[[BaichuanHeader, bytes, bytes], None] | None = None
@@ -1127,15 +1129,18 @@ class NativeTalkSession:
             if self._next_audio_send_at is None:
                 self._next_audio_send_at = now
             await asyncio.sleep(max(0.0, self._next_audio_send_at - now))
+            encode_started = time.monotonic()
             encoded = self._audio_encoder.encode_pcm16le(pcm16le)
-            await self.client.send(
-                serialize_talk_audio_message(
-                    encoded,
-                    msg_num=0,
-                    channel_id=self.channel,
-                    encrypt_xml=self._encrypt_xml,
-                )
+            self.last_encode_ms = (time.monotonic() - encode_started) * 1000
+            message = serialize_talk_audio_message(
+                encoded,
+                msg_num=0,
+                channel_id=self.channel,
+                encrypt_xml=self._encrypt_xml,
             )
+            write_started = time.monotonic()
+            await self.client.send(message)
+            self.last_tcp_write_ms = (time.monotonic() - write_started) * 1000
             # Advance on the audio clock, not from write completion. This
             # prevents normal socket/write time from being added to every
             # frame. If the sender is genuinely late, restart one frame ahead
@@ -1194,6 +1199,8 @@ class NativeTalkChannel:
         self._audio_queue: asyncio.Queue[tuple[bytes, float, asyncio.Future[None]]] | None = None
         self._audio_worker: asyncio.Task[None] | None = None
         self._audio_error: Exception | None = None
+        self.last_queue_wait_ms: float | None = None
+        self.dropped_audio_frames = 0
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -1242,9 +1249,10 @@ class NativeTalkChannel:
                 return
             pcm16le, queued_at, completion = await self._audio_queue.get()
             try:
-                if time.monotonic() - queued_at > self.MAX_AUDIO_AGE_SECONDS:
+                self.last_queue_wait_ms = (time.monotonic() - queued_at) * 1000
+                if self.last_queue_wait_ms > self.MAX_AUDIO_AGE_SECONDS * 1000:
                     # Playing old speech is worse than losing a frame in a live call.
-                    pass
+                    self.dropped_audio_frames += 1
                 elif self.transport is not None:
                     await self.transport.send_pcm(pcm16le)
                 if not completion.done():
@@ -1287,6 +1295,7 @@ class NativeTalkChannel:
         completion = asyncio.get_running_loop().create_future()
         if self._audio_queue.full():
             _, _, dropped = self._audio_queue.get_nowait()
+            self.dropped_audio_frames += 1
             if not dropped.done():
                 dropped.set_result(None)
             self._audio_queue.task_done()
@@ -1320,7 +1329,16 @@ class NativeTalkChannel:
 
     def mix_diagnostics(self) -> dict:
         """Return the active transport's mix receive counters."""
-        return self.transport.mix_diagnostics() if self.transport is not None else {}
+        if self.transport is None:
+            return {}
+        return {
+            **self.transport.mix_diagnostics(),
+            "audio_queue_depth": self._audio_queue.qsize() if self._audio_queue else 0,
+            "audio_queue_wait_ms": self.last_queue_wait_ms,
+            "audio_encode_ms": self.transport.last_encode_ms,
+            "audio_tcp_write_ms": self.transport.last_tcp_write_ms,
+            "audio_dropped_frames": self.dropped_audio_frames,
+        }
 
     def decrypt_wire_prefix(self, payload: bytes) -> bytes:
         """Inspect a bounded receive prefix without exposing the session key."""

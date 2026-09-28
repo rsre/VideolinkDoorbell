@@ -95,6 +95,25 @@ Home Assistant must be used over HTTPS (or localhost) because browsers block mic
 - `enable_popup` to enable Home Assistant's native camera dialog when clicking the video.
 - `debug` to show debug information and metrics like live WebRTC transport and PTT timing diagnostics.
 
+### Native talk timing check
+
+After installing this integration version in Home Assistant, restart Home
+Assistant, refresh the browser, and set `talk_mode: native` and `debug: true`.
+Hold **Hold to talk** for a few seconds while speaking, then release it. In
+the card's debug panel, confirm that the audio direction line reads
+`recvonly / sendonly / recvonly` and that inbound audio packets increase. The
+three directions come from the actual SDP offer, SDP answer, and browser
+transceiver rather than the requested card setting.
+
+The panel reports the latest native frame's browser callback interval, PTT to
+first callback, callback to WebSocket dispatch and enqueue acknowledgement,
+Home Assistant receive to enqueue, queue wait, ADPCM encoding, TCP
+write/drain, queue depth, and dropped-frame count. These are stage durations
+measured on their own machine; they do not require synchronized browser and
+Home Assistant clocks. WebSocket acknowledgement confirms enqueueing, not
+camera playback. To measure audible end-to-end delay, use the acoustic
+benchmark below or an external recording of the doorbell speaker.
+
 ## Versions
 
 Releases use semantic versioning (`MAJOR.MINOR.PATCH`). The integration version in `manifest.json` always matches the GitHub release tag without its leading `v`.

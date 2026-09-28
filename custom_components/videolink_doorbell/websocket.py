@@ -81,6 +81,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             if not token:
                 raise ValueError("native talk token is required")
         if action == "audio":
+            received_at = time.monotonic()
             config = await client.native_talk_start(
                 entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
                 owner=token,
@@ -88,7 +89,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             )
             pcm = _decode_pcm(msg.get("pcm"), config.length_per_encoder)
             await client.native_talk_audio(pcm, wait=False, owner=token)
-            result = {"ok": True}
+            result = {"ok": True, "ha_receive_to_enqueue_ms": (time.monotonic() - received_at) * 1000}
         elif action == "tone":
             await client.native_talk_tone(
                 entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL), owner=token

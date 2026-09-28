@@ -425,6 +425,8 @@ async def test_session_audio_uses_official_app_header_fields() -> None:
     session.client = Client()
     await session.send_audio(bytes(516))
     await session.send_pcm(bytes(2048))
+    assert session.last_encode_ms is not None and session.last_encode_ms >= 0
+    assert session.last_tcp_write_ms is not None and session.last_tcp_write_ms >= 0
 
     assert len(session.client.sent) == 2
     for message in session.client.sent:
@@ -675,6 +677,8 @@ async def test_native_audio_queue_keeps_recent_frames(monkeypatch) -> None:
     await asyncio.gather(*completions)
     await channel.stop()
     assert transport.sent == [b"0", b"2", b"3", b"4", b"5"]
+    assert channel.dropped_audio_frames == 1
+    assert channel.last_queue_wait_ms is not None
 
 
 @pytest.mark.asyncio
