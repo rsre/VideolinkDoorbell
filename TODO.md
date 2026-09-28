@@ -11,6 +11,14 @@ six-byte size difference was entirely in the extension. The app uses Baichuan
 message number 0 and a constant media-header final field of 2; our sender
 now matches both. The app's media header is otherwise constant, and its
 ADPCM predictor/index carries correctly across all 418 frame boundaries.
+An independent audit of all 419 media blocks found the same 12-byte header
+fields in every frame: `01wb` magic (`0x62773130`), two 520-byte size fields,
+data marker `0x0100`, and final field `2`. Serializing each captured ADPCM
+block with our media serializer reproduced all 419 media blocks byte for byte.
+The block itself is 516 bytes: a 4-byte predictor/index header and 512 bytes
+of ADPCM nibbles, representing 1024 samples. The media header has no explicit
+sample-count field; the precise meaning of its two size fields and final field
+remains unconfirmed.
 418 of 419 ADPCM bodies are distinct, confirming non-silent emulator input.
 Mean frame interval was 63.8 ms (median 60.1 ms). The capture is kept only in
 an owner-readable file under `/tmp`; no credentials or audio bytes are stored
@@ -133,9 +141,11 @@ Still requires a verified camera/app capture or on-device test:
 - [x] Test the SDK-style 20-byte `AudioTalkOpen` control header. This camera
       acknowledges configuration but resets the connection on the first audio
       packet; keep the verified 24-byte path.
-- [ ] Verify the native ADPCM media-header fields independently:
-      `01wb` magic, block size, cumulative size, sample count, index, and
-      predictor.
+- [x] Verify the native ADPCM media bytes against all 419 official-app frames.
+      The 12-byte header and block framing match exactly. Predictor/index are
+      in the 4-byte ADPCM block header; 1024 samples follow from 512 nibble
+      bytes. Semantic names for the two size fields and final field are still
+      unconfirmed.
 - [x] Verify the official app's ADPCM predictor/index state across consecutive
       1024-sample frames; all 418 captured frame boundaries match.
 - [x] Add an independent regression test confirming consecutive DVI-4 blocks
