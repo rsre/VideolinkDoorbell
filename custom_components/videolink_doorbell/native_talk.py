@@ -449,6 +449,30 @@ def serialize_talk_config_message(
     )
 
 
+def serialize_talk_ability_message(
+    *,
+    msg_num: int,
+    channel_id: int = 0,
+    encrypt_xml: Callable[[int, bytes], bytes] | None = None,
+) -> bytes:
+    """Build the official app's MSG 10 talk-ability request."""
+    extension = b"".join((
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b'<Extension version="1.1">\n',
+        f'<channelId>{channel_id}</channelId>\n'.encode(),
+        b'<chnType>0</chnType>\n'
+        b'</Extension>\n',
+    ))
+    if encrypt_xml is not None:
+        extension = encrypt_xml(channel_id, extension)
+    return serialize_talk_message(
+        msg_id=MSG_ID_TALK_ABILITY,
+        msg_num=msg_num,
+        channel_id=channel_id,
+        extension=extension,
+    )
+
+
 def serialize_talk_audio_message(
     adpcm_data: bytes,
     *,
@@ -709,8 +733,14 @@ class NativeTalkSession:
             candidates.insert(0, aes_cfb_decrypt(key, raw))
         candidates.append(bc_encrypt(0, raw))
         for candidate in candidates:
-            if b"<" in candidate and b">" in candidate:
-                return candidate[candidate.index(b"<") :]
+            if b"<" not in candidate:
+                continue
+            xml = candidate[candidate.index(b"<") :].rstrip(b"\x00")
+            try:
+                ElementTree.fromstring(xml)
+            except ElementTree.ParseError:
+                continue
+            return xml
         raise ValueError("Baichuan payload is not recognizable XML")
 
     async def login(self) -> None:
@@ -989,11 +1019,10 @@ class NativeTalkSession:
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
         await self.client.send(
-            serialize_talk_message(
-                msg_id=MSG_ID_TALK_ABILITY,
-                msg_num=self.client.next_message_number(),
+            serialize_talk_ability_message(
+                msg_num=0,
                 channel_id=self.channel,
-                extension=b"",
+                encrypt_xml=self._encrypt_xml,
             )
         )
         # Cameras can interleave unsolicited configuration responses (for

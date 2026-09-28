@@ -30,6 +30,14 @@ This does not isolate a header regression. Audio delivery with the final fields
 was subsequently confirmed in Home Assistant; the standalone probe discrepancy
 remains unexplained.
 
+The same app session resolves the SDK TalkAbility operation `2157` to a
+Baichuan MSG 10 request with message number 0, a 125-byte encrypted XML
+extension containing `channelId` and `chnType`, and no payload. The camera's
+successful MSG 10 response carries the `TalkAbility` XML in its payload. The
+integration now sends the captured request format. On-camera tests first
+changed only the extension, then changed message number to 0; both returned
+the ADPCM profile and allowed AudioTalkOpen.
+
 ## Firmware parity audit (2026-09-24)
 
 Live benchmark on 2026-09-25 (`/tmp/videolink-mix-005`): 4/5 tone detections,
@@ -87,12 +95,13 @@ Still requires a verified camera/app capture or on-device test:
 - [ ] Explain why the standalone tone probe received RTSP microphone audio but
       detected no tone and showed silent native mix near-end for both new and
       old header fields.
-- [ ] Harden login-negotiation XML recognition: one probe selected random
-      encrypted bytes containing `<` and `>` before applying BCEncrypt, then
-      failed to find the nonce. An immediate retry succeeded.
-- [ ] Validate the SDK binary TalkAbility query (operation 2157) against the
-      camera. The current XML query selects an ADPCM profile but is not the
-      app's exact call path.
+- [x] Harden login-negotiation XML recognition: require a parseable XML
+      document before accepting a decrypted candidate. This prevents random
+      encrypted angle brackets from hiding the nonce. Three fresh logins and
+      an on-camera TalkAbility/Open probe succeeded afterward.
+- [x] Validate the SDK TalkAbility query (operation 2157) against the camera.
+      The app's wire request is MSG 10 with an encrypted 125-byte XML extension
+      and message number 0. Both differences were tested separately.
 - [ ] Decide whether SDK ONNX/JNI AEC can be legally and practically reused.
       The Python LMS filter is not model parity and has been removed from the
       incoming playback path; do not re-enable it without channel-direction

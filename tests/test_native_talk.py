@@ -334,6 +334,57 @@ def test_talk_config_and_message_layout() -> None:
     assert b"<audioType>adpcm</audioType>" in message
 
 
+def test_official_app_talk_ability_request_layout() -> None:
+    message = native_talk.serialize_talk_ability_message(msg_num=7)
+    header, extension, payload = native_talk.split_baichuan_message(message)
+    assert header.message_id == 10
+    assert header.message_number == 7
+    assert header.payload_offset == 125
+    assert payload == b""
+    assert extension == (
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b'<Extension version="1.1">\n'
+        b'<channelId>0</channelId>\n'
+        b'<chnType>0</chnType>\n'
+        b'</Extension>\n'
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_requests_app_talk_ability_and_parses_profile() -> None:
+    session = native_talk.NativeTalkSession("camera", "user", "password")
+    session._logged_in = True
+    response = (
+        b'<body><TalkAbility version="1.1">'
+        b'<duplexList><duplex>FDX</duplex></duplexList>'
+        b'<audioStreamModeList><audioStreamMode>mixAudioStream</audioStreamMode></audioStreamModeList>'
+        b'<audioConfigList><audioConfig><audioType>adpcm</audioType>'
+        b'<sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision>'
+        b'<lengthPerEncoder>1024</lengthPerEncoder><soundTrack>mono</soundTrack>'
+        b'</audioConfig></audioConfigList></TalkAbility></body>'
+    )
+
+    class Client:
+        sent = None
+
+        async def send(self, message):
+            self.sent = message
+
+        async def receive(self):
+            return SimpleNamespace(message_id=10, response_code=200), b"", response
+
+    session.client = Client()
+    ability = await session.talk_ability()
+    header, extension, payload = native_talk.split_baichuan_message(session.client.sent)
+    assert header.message_id == 10
+    assert header.message_number == 0
+    assert len(extension) == 125
+    assert payload == b""
+    assert ability.audio_type == "adpcm"
+    assert ability.audio_stream_mode == "mixAudioStream"
+    assert ability.length_per_encoder == 1024
+
+
 def test_talk_audio_message_contains_binary_media() -> None:
     data = b"\x00\x00\x00\x00" + b"\x00" * 512
     message = native_talk.serialize_talk_audio_message(data, msg_num=8)
@@ -402,6 +453,24 @@ def test_modern_login_digests_and_bc_encrypt() -> None:
     assert password_digest == "8D7B6BEA1513F839F8861291F18AC1D"
     data = b"<body>test</body>"
     assert native_talk.bc_encrypt(0, native_talk.bc_encrypt(0, data)) == data
+
+
+def test_login_xml_recognition_ignores_angle_brackets_in_encrypted_bytes() -> None:
+    xml = None
+    encrypted = None
+    for attempt in range(1000):
+        nonce = "".join(random.Random(attempt).choices("abcdefghijklmnopqrstuvwxyz", k=64))
+        candidate = (
+            b'<?xml version="1.0"?><body><Encryption>'
+            + f'<nonce>{nonce}</nonce>'.encode()
+            + b'</Encryption></body>'
+        )
+        wire = native_talk.bc_encrypt(0, candidate)
+        if b"<" in wire and b">" in wire:
+            xml, encrypted = candidate, wire
+            break
+    assert xml is not None and encrypted is not None
+    assert native_talk.NativeTalkSession._xml_bytes(encrypted) == xml
 
 
 def test_baichuan_message_parser_handles_modern_header() -> None:
