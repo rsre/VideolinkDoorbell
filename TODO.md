@@ -159,6 +159,14 @@ Still requires a verified camera/app capture or on-device test:
       HA, camera speaker/microphone, mix decoding, WebSocket delivery, and a
       two-frame tone confirmation. The owner-readable recordings and report
       are under `/tmp/videolink-acoustic-20260929-mix-latency-002`.
+- [x] Compare direct camera TCP send to native mix tone arrival without Home
+      Assistant. Three independently opened camera sessions detected the tone
+      in the mix `nearEndData` at 1206.5, 1152.7, and 1242.9 ms after the
+      first local PCM send; `farEndData` detections were 1206.5, 1225.9, and
+      1242.9 ms. This reproduces the approximately 1.2-second interval outside
+      Home Assistant. It places the bulk of that interval in the camera's
+      talk/mix path or its native return delivery, but does not directly time
+      the speaker's audible output.
 
 ## Native talk parity and latency
 
