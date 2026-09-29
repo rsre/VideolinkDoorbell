@@ -58,3 +58,25 @@ decoder change. The first useful milestone is the source-separated app/card
 capture in step 1; if it does not show a benefit over browser AEC, reproducing
 the proprietary pipeline would not be justified. No proprietary model or
 binary is included in the distributable integration.
+
+## Browser AEC baseline
+
+Open `tools/aec_browser_measure.html` through a local server on the same
+computer used for the Home Assistant card:
+
+```bash
+python -m http.server 8765 --bind 127.0.0.1
+```
+
+Then visit `http://127.0.0.1:8765/tools/aec_browser_measure.html`. Use the
+normal speakers and microphone, keep the room quiet, and run the test. It
+plays four known tones in an Off/On/Off sequence with the card's noise
+suppression and automatic gain settings. The page reports the speaker tone
+power measured at the microphone, the attenuation with browser echo
+cancellation enabled, and the browser's actual track settings. It keeps no
+audio recording and sends no data to Home Assistant or another server.
+
+This is a browser speaker-to-microphone baseline. It does not compare the
+Reolink app's JNI/ONNX output or prove full-duplex quality with native mix
+playback. A later source-separated test must make the camera feed a known
+signal into the browser speakers while the browser microphone is recorded.

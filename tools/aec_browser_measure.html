@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Videolink browser echo test</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { line-height: 1.2; }
+    button { font: inherit; padding: .5rem .9rem; margin-right: .4rem; }
+    input { vertical-align: middle; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f3f3f3; padding: 1rem; }
+    #status { min-height: 1.5rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Browser echo cancellation test</h1>
+  <p>Use the same computer, browser, speaker, and microphone as the Home Assistant card. Play through speakers, keep the room quiet, and leave the volume fixed during the test. The tones run three times for about five seconds each.</p>
+  <p>This measures echo entering the <strong>browser microphone</strong> with echo cancellation off, on, then off again. It does not measure the Reolink app's AEC or the doorbell speaker. Audio stays in this browser tab; only the numerical result is shown.</p>
+  <label>Test volume <input id="volume" type="range" min="2" max="20" value="8"> <span id="volume-label">8%</span></label>
+  <p><button id="start">Start test</button><button id="stop" disabled>Stop</button><button id="copy" disabled>Copy result</button></p>
+  <p id="status" role="status">Ready.</p>
+  <pre id="result">No result yet.</pre>
+  <script>
+    const startButton = document.querySelector("#start");
+    const stopButton = document.querySelector("#stop");
+    const copyButton = document.querySelector("#copy");
+    const status = document.querySelector("#status");
+    const output = document.querySelector("#result");
+    const volume = document.querySelector("#volume");
+    const volumeLabel = document.querySelector("#volume-label");
+    let cancelled = false;
+    let resultText = "";
+
+    volume.addEventListener("input", () => { volumeLabel.textContent = `${volume.value}%`; });
+    stopButton.addEventListener("click", () => { cancelled = true; status.textContent = "Stopping after this phase…"; });
+    copyButton.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(resultText);
+      status.textContent = "Result copied.";
+    });
+
+    const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+    const db = (power) => power > 0 ? 10 * Math.log10(power) : null;
+    const round = (value) => value == null ? null : Math.round(value * 10) / 10;
+
+    async function measurePower(analyser, bins, milliseconds) {
+      const spectrum = new Float32Array(analyser.frequencyBinCount);
+      let total = 0;
+      let samples = 0;
+      const deadline = performance.now() + milliseconds;
+      while (performance.now() < deadline && !cancelled) {
+        analyser.getFloatFrequencyData(spectrum);
+        total += bins.reduce((sum, bin) => sum + 10 ** (spectrum[bin] / 10), 0);
+        samples += 1;
+        await sleep(50);
+      }
+      if (cancelled || samples === 0) throw new Error("Test stopped");
+      return total / samples;
+    }
+
+    async function runPhase(context, enabled, label, level, bins) {
+      status.textContent = `${label}: requesting microphone…`;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: enabled,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+        video: false,
+      });
+      const track = stream.getAudioTracks()[0];
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 8192;
+      analyser.smoothingTimeConstant = 0;
+      const monitor = context.createGain();
+      monitor.gain.value = 0;
+      source.connect(analyser).connect(monitor).connect(context.destination);
+      const master = context.createGain();
+      master.gain.value = level;
+      master.connect(context.destination);
+      const oscillators = [];
+      try {
+        if (cancelled) throw new Error("Test stopped");
+        status.textContent = `${label}: measuring room noise…`;
+        const baseline = await measurePower(analyser, bins, 1000);
+        status.textContent = `${label}: playing test tones…`;
+        for (const bin of bins) {
+          const oscillator = context.createOscillator();
+          const gain = context.createGain();
+          oscillator.type = "sine";
+          oscillator.frequency.value = bin * context.sampleRate / analyser.fftSize;
+          gain.gain.value = 1 / bins.length;
+          oscillator.connect(gain).connect(master);
+          oscillator.start();
+          oscillators.push(oscillator);
+        }
+        await sleep(1800); // Let browser AEC settle before sampling.
+        const playing = await measurePower(analyser, bins, 3000);
+        return {
+          label,
+          requestedEchoCancellation: enabled,
+          actualSettings: Object.fromEntries(
+            ["echoCancellation", "noiseSuppression", "autoGainControl", "channelCount", "sampleRate"]
+              .map((key) => [key, track.getSettings()[key]])
+              .filter(([, value]) => value !== undefined),
+          ),
+          baselineDb: round(db(baseline)),
+          playingDb: round(db(playing)),
+          echoDb: round(db(Math.max(0, playing - baseline))),
+          echoPower: Math.max(0, playing - baseline),
+          noisePower: baseline,
+        };
+      } finally {
+        for (const oscillator of oscillators) { try { oscillator.stop(); } catch {} }
+        master.disconnect();
+        source.disconnect();
+        monitor.disconnect();
+        track.stop();
+        await sleep(350);
+      }
+    }
+
+    startButton.addEventListener("click", async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        status.textContent = "Microphone access requires localhost or HTTPS and a supported browser.";
+        return;
+      }
+      cancelled = false;
+      startButton.disabled = true;
+      stopButton.disabled = false;
+      copyButton.disabled = true;
+      volume.disabled = true;
+      output.textContent = "Running…";
+      let context;
+      try {
+        const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextConstructor) throw new Error("This browser does not support Web Audio.");
+        context = new AudioContextConstructor({ latencyHint: "interactive" });
+        await context.resume();
+        const bins = [97, 181, 277, 421];
+        const phases = [];
+        for (const [enabled, label] of [[false, "Off 1"], [true, "On"], [false, "Off 2"]]) {
+          if (cancelled) throw new Error("Test stopped");
+          phases.push(await runPhase(context, enabled, label, Number(volume.value) / 100, bins));
+        }
+        const off = (phases[0].echoPower + phases[2].echoPower) / 2;
+        const on = phases[1].echoPower;
+        const settingsValid = phases[0].actualSettings.echoCancellation === false
+          && phases[1].actualSettings.echoCancellation === true
+          && phases[2].actualSettings.echoCancellation === false;
+        const audibleReference = off > (phases[0].noisePower + phases[2].noisePower) / 2 * 3;
+        const floorLimited = on <= phases[1].noisePower;
+        const attenuationDb = off > 0
+          ? round(10 * Math.log10(off / Math.max(on, phases[1].noisePower)))
+          : null;
+        const report = {
+          measurement: "Browser speaker-to-microphone multitone echo, Off/On/Off",
+          sampleRate: context.sampleRate,
+          testVolumePercent: Number(volume.value),
+          settingsValid,
+          audibleReference,
+          attenuationDb,
+          attenuationIsLowerBound: floorLimited,
+          interpretation: !settingsValid ? "Browser did not report the requested echo cancellation settings."
+            : !audibleReference ? "Speaker echo was too close to room noise for a reliable comparison."
+              : floorLimited ? "AEC reduced test-tone echo to the measured noise floor or below."
+                : "Attenuation is the difference between the off and on test-tone power.",
+          phases: phases.map(({ echoPower, noisePower, ...values }) => values),
+        };
+        resultText = JSON.stringify(report, null, 2);
+        output.textContent = resultText;
+        copyButton.disabled = false;
+        status.textContent = "Done. Copy the result and send it back for review.";
+      } catch (error) {
+        status.textContent = error?.message || String(error);
+        output.textContent = "No completed result.";
+      } finally {
+        await context?.close();
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        volume.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
