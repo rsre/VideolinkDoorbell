@@ -105,7 +105,12 @@ Still requires a verified camera/app capture or on-device test:
 - [ ] Explain why the standalone tone probe received RTSP microphone audio but
       detected no tone and showed silent native mix near-end for both new and
       old header fields. A later immediate-start probe did detect the tone in
-      native mix near-end, so the failure is intermittent.
+      native mix near-end, so the failure is intermittent. A direct one-second
+      tone experiment reproduced one mechanism: stopping talk immediately
+      after its last PCM frame produced no detected near-end tone, whereas
+      leaving the session open for two more seconds detected it at 1189 ms
+      after the first send. This is consistent with the measured camera path
+      delay, but the exact stop timing of the older failed probe is unverified.
 - [x] Harden login-negotiation XML recognition: require a parseable XML
       document before accepting a decrypted candidate. This prevents random
       encrypted angle brackets from hiding the nonce. Three fresh logins and

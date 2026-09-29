@@ -215,6 +215,12 @@ request to RTSP/FFmpeg detection. Neither is a direct measurement at the
 doorbell speaker; both include camera microphone and transport delays. Use
 `--save-mix-wav` to retain the decoded native mix privately for inspection.
 
+Short direct probes must keep the native talk session open long enough for the
+camera's buffered audio to play. In a one-second direct-tone experiment, an
+immediate `AudioTalkStop` suppressed the tone in native mix; waiting two
+seconds before stop allowed detection. The dashboard keeps its native session
+open after releasing Hold to talk, so queued speech can finish playing.
+
 The `aes_extension_xml_frames` and `aes_payload_media_magic_frames` counters
 are diagnostic probes for recognizable headers. Use the decoded-frame and
 rejected-frame counters to assess native mix playback; a zero in either probe
