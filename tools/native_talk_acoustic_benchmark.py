@@ -21,7 +21,7 @@ import wave
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ThreadedResolver
 
-from native_talk_rtsp_probe import DETECT_FRAME_SAMPLES, SAMPLE_RATE, RtspAudioCapture
+from native_talk_rtsp_probe import DETECT_FRAME_SAMPLES, SAMPLE_RATE, RtspAudioCapture, _detect_tone
 
 
 TONE_SECONDS = 2.0  # The integration's native tone command sends a two-second tone.
@@ -60,6 +60,11 @@ class HomeAssistantNativeTone:
         self.mix_pcm_clipped_samples = 0
         self.capture_mix_pcm = False
         self.mix_pcm_frames: list[bytes] = []
+        self.mix_tone_sent_at: float | None = None
+        self.mix_tone_detected_at: float | None = None
+        self.mix_last_tone_at: float | None = None
+        self.mix_tone_presence_flags: list[bool] = []
+        self._mix_tone_candidate_frames = 0
         self.raw_dump_count = 0
         self.raw_dump_dropped = 0
         self._raw_dump_file = None
@@ -185,6 +190,7 @@ class HomeAssistantNativeTone:
                                         self.mix_pcm_squared_sum += sum(sample * sample for sample in samples)
                                         self.mix_pcm_non_silent_frames += any(abs(sample) >= 64 for sample in samples)
                                         self.mix_pcm_clipped_samples += sum(abs(sample) >= 32760 for sample in samples)
+                                        self.observe_mix_tone(decoded)
                                 except ValueError:
                                     pass
                     continue
@@ -196,6 +202,26 @@ class HomeAssistantNativeTone:
                 if not future.done():
                     future.set_exception(err)
             self._pending.clear()
+
+    def begin_mix_tone_observation(self, sent_at: float) -> None:
+        """Time the first sustained tone in decoded camera-microphone mix."""
+        self.mix_tone_sent_at = sent_at
+        self.mix_tone_detected_at = None
+        self.mix_tone_presence_flags = []
+        self._mix_tone_candidate_frames = 0
+
+    def observe_mix_tone(self, pcm: bytes) -> None:
+        tone_present = _detect_tone(pcm)
+        if tone_present:
+            self.mix_last_tone_at = time.monotonic()
+        if self.mix_tone_sent_at is None:
+            return
+        self.mix_tone_presence_flags.append(tone_present)
+        self._mix_tone_candidate_frames = (
+            self._mix_tone_candidate_frames + 1 if tone_present else 0
+        )
+        if self.mix_tone_detected_at is None and self._mix_tone_candidate_frames >= 2:
+            self.mix_tone_detected_at = time.monotonic()
 
     async def command(
         self, action: str, *, timeout: float = 15, on_send=None,
@@ -338,8 +364,18 @@ async def _wait_for_camera_audio(capture: RtspAudioCapture, task: asyncio.Task, 
         await asyncio.sleep(0.05)
 
 
-def summarize(runs: list[dict]) -> dict:
-    latencies = [run["latency_ms"] for run in runs if run["latency_ms"] is not None]
+async def _wait_for_native_mix_quiet(client: HomeAssistantNativeTone, *, seconds: float = 0.5,
+                                     timeout: float = 8.0) -> None:
+    """Exclude a previous trial's speaker tail from the next onset timing."""
+    deadline = time.monotonic() + timeout
+    while client.mix_last_tone_at is not None and time.monotonic() - client.mix_last_tone_at < seconds:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Native mix still contains 440 Hz before the next tone")
+        await asyncio.sleep(0.05)
+
+
+def summarize(runs: list[dict], latency_key: str = "latency_ms") -> dict:
+    latencies = [run[latency_key] for run in runs if run[latency_key] is not None]
     summary = {"detected": len(latencies), "runs": len(runs)}
     if latencies:
         summary.update({
@@ -347,10 +383,10 @@ def summarize(runs: list[dict]) -> dict:
             "median_ms": round(statistics.median(latencies), 1),
             "min_ms": round(min(latencies), 1),
             "max_ms": round(max(latencies), 1),
-            "first_ms": runs[0]["latency_ms"],
+            "first_ms": runs[0][latency_key],
             "subsequent_mean_ms": round(statistics.mean(
-                run["latency_ms"] for run in runs[1:] if run["latency_ms"] is not None
-            ), 1) if any(run["latency_ms"] is not None for run in runs[1:]) else None,
+                run[latency_key] for run in runs[1:] if run[latency_key] is not None
+            ), 1) if any(run[latency_key] is not None for run in runs[1:]) else None,
         })
     return summary
 
@@ -440,6 +476,7 @@ async def _run_trial(
         "run": run_number,
         "recording": recording.name,
         "latency_ms": None,
+        "native_mix_latency_ms": None,
         "status": "not_detected",
         "rtsp_audio_received": False,
     }
@@ -452,8 +489,12 @@ async def _run_trial(
         if capture.background_tone_detected_at is not None:
             result["status"] = "background_tone"
             return result
-        await client.command("tone", timeout=TONE_SECONDS + 10,
-                             on_send=lambda timestamp: setattr(capture, "tone_sent_at", timestamp))
+        await _wait_for_native_mix_quiet(client)
+        def tone_sent(timestamp: float) -> None:
+            capture.tone_sent_at = timestamp
+            client.begin_mix_tone_observation(timestamp)
+
+        await client.command("tone", timeout=TONE_SECONDS + 10, on_send=tone_sent)
         deadline = capture.tone_sent_at + TONE_SECONDS + observe_seconds
         while capture.tone_detected_at is None and time.monotonic() < deadline and not task.done():
             await asyncio.sleep(0.05)
@@ -465,10 +506,18 @@ async def _run_trial(
             result["status"] = "detected"
         elif task.done():
             result["status"] = "rtsp_ended"
+        if client.mix_tone_detected_at is not None and client.mix_tone_sent_at is not None:
+            result["native_mix_latency_ms"] = round(
+                (client.mix_tone_detected_at - client.mix_tone_sent_at) * 1000, 1
+            )
+            result["native_mix_tone_continuity"] = tone_continuity(
+                client.mix_tone_presence_flags, TONE_SECONDS
+            )
     except Exception as err:
         result["status"] = "error"
         result["error"] = f"{type(err).__name__}: {err}"
     finally:
+        client.mix_tone_sent_at = None
         stop.set()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -527,6 +576,8 @@ async def benchmark(args: argparse.Namespace) -> int:
             runs.append(result)
             latency = result["latency_ms"]
             print(f"run {run_number}: {result['status']}" + (f" ({latency:.1f} ms)" if latency is not None else ""))
+            if result["native_mix_latency_ms"] is not None:
+                print(f"  native mix tone detected ({result['native_mix_latency_ms']:.1f} ms)")
             print(f"  native mix: {result['native_mix']['interpretation']} "
                   f"(raw={result['native_mix']['raw_messages']}, "
                   f"parsed={result['native_mix']['parsed_frames']}, "
@@ -546,6 +597,8 @@ async def benchmark(args: argparse.Namespace) -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "measurement": "HA tone request to confirmed 440 Hz in doorbell RTSP microphone audio",
         "limitations": "Includes WebSocket, native send, speaker, microphone, RTSP, and FFmpeg delay; excludes browser microphone capture.",
+        "native_mix_measurement": "HA tone request to confirmed 440 Hz in decoded camera-microphone native mix WebSocket events",
+        "native_mix_limitations": "Includes Home Assistant, camera speaker and microphone, native mix decoding, and WebSocket delay; excludes browser microphone capture and playback.",
         "entity_id": args.entity_id,
         "tone_seconds": TONE_SECONDS,
         "observe_seconds": args.observe,
@@ -560,6 +613,7 @@ async def benchmark(args: argparse.Namespace) -> int:
         "decrypted_header_capture": decrypt_headers,
         "runs": runs,
         "summary": summary,
+        "native_mix_latency_summary": summarize(runs, "native_mix_latency_ms"),
     }
     (args.output_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"detected {summary['detected']}/{summary['runs']}; report: {args.output_dir / 'report.json'}")

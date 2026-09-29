@@ -149,6 +149,16 @@ Still requires a verified camera/app capture or on-device test:
       run-to-run spread and does not establish a raw-capture latency cost.
       Private recordings and reports remain under the owner-readable
       `/tmp/videolink-acoustic-20260929-live-001` and `-002` directories.
+- [x] Compare native mix and RTSP tone arrival in one trial. The benchmark now
+      waits for a quiet native mix baseline before each request, preventing a
+      previous tone tail from being counted as a new onset. Five live runs detected the
+      tone in both paths with 100% presence and zero gaps. Native mix detected
+      it in 1147.1–1284.2 ms (mean 1211.2 ms); RTSP detected it in
+      1410.3–1492.6 ms (mean 1437.8 ms). The mean 226.6 ms difference includes
+      distinct transport and decoder paths. Native mix timing still includes
+      HA, camera speaker/microphone, mix decoding, WebSocket delivery, and a
+      two-frame tone confirmation. The owner-readable recordings and report
+      are under `/tmp/videolink-acoustic-20260929-mix-latency-002`.
 
 ## Native talk parity and latency
 

@@ -206,6 +206,15 @@ the recordings as well as reading the numbers: a missed detection or a gap in
 the tone score may mean the doorbell's echo cancellation hid the tone from its
 own microphone.
 
+The report also measures tone arrival in decoded native mix PCM. The tool
+waits until the native mix is quiet before each trial, so a previous tone's
+tail cannot count as a new response. `native_mix_latency_summary` measures from
+the Home Assistant tone request to two consecutive 440 Hz camera-microphone
+mix frames arriving at the CLI. The original `summary` measures the same
+request to RTSP/FFmpeg detection. Neither is a direct measurement at the
+doorbell speaker; both include camera microphone and transport delays. Use
+`--save-mix-wav` to retain the decoded native mix privately for inspection.
+
 The `aes_extension_xml_frames` and `aes_payload_media_magic_frames` counters
 are diagnostic probes for recognizable headers. Use the decoded-frame and
 rejected-frame counters to assess native mix playback; a zero in either probe

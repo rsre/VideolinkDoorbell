@@ -6,9 +6,12 @@ import asyncio
 import argparse
 import importlib.util
 import json
+import math
 import stat
 from pathlib import Path
+import struct
 import sys
+import time
 
 import pytest
 from aiohttp import ThreadedResolver
@@ -42,6 +45,23 @@ def test_summary_keeps_failed_runs_out_of_latency_statistics() -> None:
         "first_ms": 300.0,
         "subsequent_mean_ms": 500.0,
     }
+
+
+def test_native_mix_tone_requires_two_consecutive_frames() -> None:
+    client = benchmark.HomeAssistantNativeTone("https://ha.example", "token", "camera.front_door")
+    tone = struct.pack(
+        "<1024h",
+        *(int(1000 * math.sin(2 * math.pi * 440 * sample / 16000)) for sample in range(1024)),
+    )
+    client.begin_mix_tone_observation(time.monotonic())
+    client.observe_mix_tone(tone)
+    assert client.mix_tone_detected_at is None
+    client.observe_mix_tone(tone)
+    assert client.mix_tone_detected_at is not None
+    assert client.mix_tone_presence_flags == [True, True]
+    client.begin_mix_tone_observation(time.monotonic())
+    assert client.mix_tone_detected_at is None
+    assert client.mix_tone_presence_flags == []
 
 
 @pytest.mark.asyncio
@@ -283,6 +303,13 @@ async def test_trial_records_detection_from_command_send(monkeypatch, tmp_path) 
             pass
 
     class Client:
+        mix_last_tone_at = None
+
+        def begin_mix_tone_observation(self, sent_at):
+            self.mix_tone_sent_at = sent_at
+            self.mix_tone_detected_at = sent_at + 0.2
+            self.mix_tone_presence_flags = [True, True]
+
         async def command(self, action, *, timeout, on_send):
             assert action == "tone"
             on_send(10.0)
@@ -293,7 +320,17 @@ async def test_trial_records_detection_from_command_send(monkeypatch, tmp_path) 
     result = await benchmark._run_trial(Client(), "rtsp://camera", tmp_path, 1, 1.0)
     assert result["status"] == "detected"
     assert result["latency_ms"] == 350.0
+    assert result["native_mix_latency_ms"] == 200.0
     assert result["recording"] == "run-01.wav"
+
+
+@pytest.mark.asyncio
+async def test_next_trial_waits_for_native_mix_tone_to_clear() -> None:
+    client = benchmark.HomeAssistantNativeTone("https://ha.example", "token", "camera.front_door")
+    client.mix_last_tone_at = time.monotonic()
+    started = time.monotonic()
+    await benchmark._wait_for_native_mix_quiet(client, seconds=0.02, timeout=0.2)
+    assert time.monotonic() - started >= 0.02
 
 
 @pytest.mark.asyncio
@@ -327,6 +364,7 @@ async def test_benchmark_writes_report_without_credentials(monkeypatch, tmp_path
     async def trial(*args):
         return {
             "run": 1, "recording": "run-01.wav", "latency_ms": 420.0,
+            "native_mix_latency_ms": 300.0,
             "status": "detected", "rtsp_audio_received": True,
         }
 
@@ -343,6 +381,7 @@ async def test_benchmark_writes_report_without_credentials(monkeypatch, tmp_path
     assert await benchmark.benchmark(args) == 0
     report_text = (output_dir / "report.json").read_text()
     report = json.loads(report_text)
+    assert report["native_mix_latency_summary"]["mean_ms"] == 300.0
     assert report["summary"]["mean_ms"] == 420.0
     assert report["runs"][0]["recording"] == "run-01.wav"
     assert report["runs"][0]["native_mix"]["raw_messages"] == 1
