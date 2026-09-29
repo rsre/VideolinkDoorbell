@@ -214,6 +214,11 @@ Still requires a verified camera/app capture or on-device test:
 - [ ] Evaluate SDK-style AEC for the local near-end microphone signal using
       far-end audio as reference. This is separate from incoming mix playback;
       JNI/model parity and browser capture/reference alignment remain unverified.
+      A local browser speaker-to-microphone test found at least 45.2 dB of
+      echo attenuation with browser AEC on (AEC-off tone levels -44.0/-42.9 dB;
+      AEC-on tone below the noise floor). Next verify near-end speech quality
+      while native mix plays during full-duplex talk before considering a
+      custom or SDK-derived AEC path.
 - [x] Confirm native stop/close behavior and recovery after interruption;
       verified across three consecutive camera sessions.
 

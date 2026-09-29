@@ -80,3 +80,14 @@ This is a browser speaker-to-microphone baseline. It does not compare the
 Reolink app's JNI/ONNX output or prove full-duplex quality with native mix
 playback. A later source-separated test must make the camera feed a known
 signal into the browser speakers while the browser microphone is recorded.
+
+On 2026-09-29, a live test on the Home Assistant browser device at 44.1 kHz
+used the normal speakers and microphone at 8% test volume. The two AEC-off
+passes measured the four test tones at -44.0 and -42.9 dB in the browser's
+microphone spectrum (relative digital levels, not calibrated sound pressure).
+With AEC on, the tone bins fell below the measured noise floor. The page
+reported **at least 45.2 dB** of attenuation and confirmed that the browser
+applied the requested `echoCancellation` settings. This supports using browser
+AEC for local speaker echo on this device. It does not establish how much
+near-end speech survives while AEC is active, or how it handles actual camera
+audio during simultaneous talk and listen.
