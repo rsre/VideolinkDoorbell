@@ -179,15 +179,16 @@ class VideolinkClient:
         if not isinstance(token_data, dict):
             raise VideolinkAuthError("Camera returned invalid login token data")
         token = token_data.get("name")
-        if not token:
+        if not isinstance(token, str) or not token:
             raise VideolinkAuthError("Camera did not return a login token")
-        self._token = token
         try:
             lease = max(60, int(token_data.get("leaseTime", 3600)))
-        except (TypeError, ValueError) as err:
+            expires = datetime.now(timezone.utc) + timedelta(seconds=lease - 30)
+        except (OverflowError, TypeError, ValueError):
             self._token = None
-            raise VideolinkError("Camera returned an invalid token lifetime") from err
-        self._token_expires = datetime.now(timezone.utc) + timedelta(seconds=lease - 30)
+            raise VideolinkError("Camera returned an invalid token lifetime") from None
+        self._token = token
+        self._token_expires = expires
 
     async def ensure_login(self) -> str:
         """Return a valid API token, renewing it shortly before expiry."""
@@ -242,13 +243,17 @@ class VideolinkClient:
         """Read camera identity."""
         value = await self.command("GetDevInfo")
         info = value.get("DevInfo", value)
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or any(
+            not isinstance(value, str)
+            for key in ("name", "model", "serial", "firmVer")
+            if (value := info.get(key)) is not None
+        ):
             raise VideolinkError("Camera returned invalid device information")
         return DeviceInfo(
             name=info.get("name") or info.get("model") or "Videolink Camera",
-            model=info.get("model", "Unknown"),
-            serial=info.get("serial", ""),
-            firmware=info.get("firmVer", ""),
+            model=info.get("model") or "Unknown",
+            serial=info.get("serial") or "",
+            firmware=info.get("firmVer") or "",
         )
 
     async def snapshot(self, channel: int) -> bytes:
