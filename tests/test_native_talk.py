@@ -27,6 +27,50 @@ SPEC.loader.exec_module(native_talk)
 
 
 @pytest.mark.asyncio
+async def test_shutdown_cancels_stalled_and_queued_frames(monkeypatch):
+    entered = asyncio.Event()
+
+    class Transport:
+        closed = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def login(self):
+            pass
+
+        async def talk_ability(self):
+            return native_talk.TalkAbility()
+
+        async def open_talk(self, _config):
+            pass
+
+        async def send_pcm(self, _pcm):
+            entered.set()
+            await asyncio.Future()
+
+        async def stop_talk(self):
+            raise TimeoutError
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", Transport)
+    channel = native_talk.NativeTalkChannel("camera", "user", "password")
+    channel.DRAIN_TIMEOUT_SECONDS = 0.01
+    await channel.start()
+    transport = channel.transport
+    first = await channel.enqueue_pcm(b"first")
+    await entered.wait()
+    second = await channel.enqueue_pcm(b"second")
+    await asyncio.wait_for(channel.stop(), 0.5)
+    assert transport.closed
+    assert first.cancelled() and second.cancelled()
+    assert channel.transport is None
+    assert channel._audio_worker is None
+
+
+@pytest.mark.asyncio
 async def test_mix_diagnostics_count_raw_headers_and_forwarded_frames() -> None:
     frames = []
     raw_frames = []

@@ -22,6 +22,9 @@ from xml.sax.saxutils import escape
 _LOGGER = logging.getLogger(__name__)
 
 NATIVE_TALK_PORT = 9000
+CONNECT_TIMEOUT_SECONDS = 10
+WRITE_TIMEOUT_SECONDS = 5
+CLOSE_TIMEOUT_SECONDS = 2
 SAMPLE_RATE = 16_000
 SAMPLES_PER_FRAME = 1_024
 FRAME_DURATION_MS = 64
@@ -506,15 +509,21 @@ class BaichuanTcpClient:
 
     async def connect(self) -> None:
         """Open the camera's proprietary media/control TCP service."""
-        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+        async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
 
     async def close(self) -> None:
         """Close the session transport."""
-        if self.writer is not None:
-            self.writer.close()
-            await self.writer.wait_closed()
+        writer = self.writer
         self.reader = None
         self.writer = None
+        if writer is not None:
+            writer.close()
+            try:
+                async with asyncio.timeout(CLOSE_TIMEOUT_SECONDS):
+                    await writer.wait_closed()
+            except TimeoutError:
+                writer.transport.abort()
 
     def next_message_number(self) -> int:
         """Return the next 16-bit Baichuan message number."""
@@ -526,7 +535,8 @@ class BaichuanTcpClient:
         if self.writer is None:
             raise RuntimeError("Baichuan TCP client is not connected")
         self.writer.write(message)
-        await self.writer.drain()
+        async with asyncio.timeout(WRITE_TIMEOUT_SECONDS):
+            await self.writer.drain()
 
     async def receive(self) -> tuple[BaichuanHeader, bytes, bytes]:
         """Read one complete framed Baichuan message."""
@@ -1039,6 +1049,8 @@ class NativeTalkChannel:
 
     AUDIO_QUEUE_MAXSIZE = 2
     MAX_AUDIO_AGE_SECONDS = 0.128
+    DRAIN_TIMEOUT_SECONDS = 1
+    STOP_TIMEOUT_SECONDS = 2
 
     def __init__(
         self,
@@ -1063,11 +1075,12 @@ class NativeTalkChannel:
         self.last_queue_wait_ms: float | None = None
         self.dropped_audio_frames = 0
         self._lifecycle_lock = asyncio.Lock()
+        self._stopping = False
 
     @property
     def active(self) -> bool:
         """Whether the negotiated talk session is ready to send audio."""
-        return self.transport is not None and self._audio_queue is not None
+        return not self._stopping and self.transport is not None and self._audio_queue is not None
 
     @property
     def failed(self) -> bool:
@@ -1118,6 +1131,10 @@ class NativeTalkChannel:
                     await self.transport.send_pcm(pcm16le)
                 if not completion.done():
                     completion.set_result(None)
+            except asyncio.CancelledError:
+                if not completion.done():
+                    completion.cancel()
+                raise
             except Exception as err:  # noqa: BLE001 - fail all queued frames on worker error
                 self._audio_error = err
                 if not completion.done():
@@ -1213,17 +1230,36 @@ class NativeTalkChannel:
             transport = self.transport
             if transport is None:
                 return
+            self._stopping = True
             try:
                 if self._audio_queue is not None:
-                    await self._audio_queue.join()
-                await transport.stop_talk()
+                    try:
+                        async with asyncio.timeout(self.DRAIN_TIMEOUT_SECONDS):
+                            await self._audio_queue.join()
+                    except TimeoutError:
+                        _LOGGER.debug("Discarding native audio during stalled shutdown")
             finally:
                 if self._audio_worker is not None:
                     self._audio_worker.cancel()
                     await asyncio.gather(self._audio_worker, return_exceptions=True)
-                await transport.close()
-                self._audio_worker = None
-                self._audio_queue = None
-                self._audio_error = None
-                self.transport = None
-                self.talk_config = None
+                if self._audio_queue is not None:
+                    while not self._audio_queue.empty():
+                        _, _, pending = self._audio_queue.get_nowait()
+                        if not pending.done():
+                            pending.cancel()
+                        self._audio_queue.task_done()
+                try:
+                    async with asyncio.timeout(self.STOP_TIMEOUT_SECONDS):
+                        await transport.stop_talk()
+                except (OSError, RuntimeError):
+                    _LOGGER.debug("Camera did not acknowledge native talk shutdown")
+                finally:
+                    try:
+                        await transport.close()
+                    finally:
+                        self._audio_worker = None
+                        self._audio_queue = None
+                        self._audio_error = None
+                        self.transport = None
+                        self.talk_config = None
+                        self._stopping = False
