@@ -25,7 +25,7 @@ from .const import (
     DEFAULT_VIDEO_SOURCE,
     DOMAIN,
 )
-from .go2rtc import get_streams_api
+from .go2rtc import async_oriented_video_source, get_streams_api
 from .runtime import VideolinkRuntime
 
 _LOGGER = logging.getLogger(__name__)
@@ -173,10 +173,22 @@ class VideolinkWebCamera(Camera):
             await self._async_register_go2rtc_sources(video_url)
         return video_url
 
+    async def async_get_stream_sources(self):
+        """Expose both sources through Core's public API when it is available."""
+        from homeassistant.components.camera import CameraStreamSource
+        from homeassistant.components.stream import Orientation
+
+        return [
+            CameraStreamSource(await self.stream_source()),
+            CameraStreamSource(
+                self._client.rtsp_backchannel_url(self._channel, self._stream, self._rtsp_port),
+                orientation=Orientation.NO_TRANSFORM,
+            ),
+        ]
+
     async def _async_register_go2rtc_sources(self, video_url: str) -> None:
         """Register the console video and talk backchannel as one go2rtc stream."""
-        # Home Assistant's provider currently accepts one source from Camera, but
-        # go2rtc supports multiple producers. Register the composite first.
+        # Keep registration compatible with older single-source Core providers.
         from homeassistant.components.go2rtc.util import get_camera_identifier
 
         streams_api = get_streams_api(self.hass)
@@ -186,6 +198,7 @@ class VideolinkWebCamera(Camera):
             )
             return
 
+        video_url = await async_oriented_video_source(self.hass, self.entity_id, video_url)
         identifier = get_camera_identifier(self)
         rtsp_url = self._client.rtsp_backchannel_url(
             self._channel, self._stream, self._rtsp_port

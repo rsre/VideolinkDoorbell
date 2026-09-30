@@ -65,3 +65,51 @@ async def test_snapshot_auth_failure_starts_reauth_and_recovery_restores_availab
     camera._client.snapshot.side_effect = None
     await camera.async_camera_image()
     assert camera.available
+
+
+@pytest.mark.asyncio
+async def test_orientation_preserves_backchannel_through_core_provider(camera, monkeypatch):
+    from homeassistant.components import go2rtc as core_go2rtc
+    from homeassistant.components.camera import prefs
+    from homeassistant.components.stream import Orientation
+
+    from custom_components.videolink_doorbell import camera as camera_module
+
+    settings = AsyncMock(return_value=SimpleNamespace(orientation=Orientation.ROTATE_RIGHT))
+    monkeypatch.setattr(prefs, "get_dynamic_camera_stream_settings", settings)
+    monkeypatch.setattr(core_go2rtc, "get_dynamic_camera_stream_settings", settings)
+    registered = {}
+    async def add(name, urls):
+        registered[name] = SimpleNamespace(producers=[SimpleNamespace(url=url) for url in urls])
+    streams = SimpleNamespace(list=AsyncMock(side_effect=lambda: registered), add=AsyncMock(side_effect=add))
+    monkeypatch.setattr(camera_module, "get_streams_api", Mock(return_value=streams))
+    camera._async_register_go2rtc_sources = VideolinkWebCamera._async_register_go2rtc_sources.__get__(camera)
+    camera._client.rtsp_backchannel_url = Mock(return_value="rtsp://camera.local/backchannel")
+    camera.entity_id = "camera.front"
+    camera.platform = SimpleNamespace(platform_name="videolink_doorbell")
+    provider = object.__new__(core_go2rtc.WebRTCProvider)
+    provider._supported_schemes = {"https", "rtsp"}
+    provider._hass = camera.hass
+    provider._rest_client = SimpleNamespace(streams=streams)
+    await provider._update_stream_source(camera)
+    assert streams.add.await_count == 1
+    sources = streams.add.call_args.args[1]
+    assert sources[0].endswith("#rotate=90")
+    assert "rtsp://camera.local/backchannel" in sources
+    assert all(not url.startswith("ffmpeg:rtsp://camera.local/backchannel") for url in sources)
+
+
+@pytest.mark.asyncio
+async def test_legacy_orientation_matches_core_for_every_orientation(monkeypatch):
+    from homeassistant.components import go2rtc as core_go2rtc
+    from homeassistant.components.camera import prefs
+    from homeassistant.components.stream import Orientation
+
+    from custom_components.videolink_doorbell.go2rtc import async_oriented_video_source
+
+    if not hasattr(core_go2rtc, "_apply_orientation"):
+        pytest.skip("This Core version applies orientation inside the provider")
+    for orientation in Orientation:
+        monkeypatch.setattr(prefs, "get_dynamic_camera_stream_settings", AsyncMock(return_value=SimpleNamespace(orientation=orientation)))
+        url = "https://camera.local/flv?token=test"
+        assert await async_oriented_video_source(None, "camera.front", url) == core_go2rtc._apply_orientation(url, orientation)
