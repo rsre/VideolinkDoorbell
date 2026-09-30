@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timezone
 import secrets
 import time
+from datetime import datetime, timezone
 
 import voluptuous as vol
-
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
@@ -18,7 +17,6 @@ from homeassistant.helpers import entity_registry as er
 
 from .api import VideolinkClient
 from .const import CONF_CHANNEL, DEFAULT_CHANNEL, DOMAIN
-
 
 COMMAND = "videolink_doorbell/native_talk"
 RAW_CAPTURE_MAX_BYTES = 16 * 1024 * 1024
@@ -119,7 +117,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                             "pcm": base64.b64encode(frame.incoming_pcm).decode(),
                         },
                     })
-                except Exception:
+                except Exception:  # noqa: BLE001 - connection may close during send
                     return
 
             await client.native_talk_set_mix_callback(on_mix_frame, owner=token)
@@ -134,8 +132,8 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                             decrypted_prefix = client.native_talk_decrypt_wire_prefix(
                                 payload, owner=token
                             )
-                        except Exception:
-                            pass
+                        except Exception:  # noqa: BLE001 - optional capture may fail independently
+                            decrypted_prefix = None
                     size = len(extension) + len(payload) + 64 + len(decrypted_prefix or b"")
                     if raw_bytes + size > RAW_CAPTURE_MAX_BYTES:
                         raw_dropped += 1
@@ -197,7 +195,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
     except (ValueError, binascii.Error) as err:
         connection.send_error(msg["id"], "invalid_format", str(err))
         return
-    except Exception as err:  # Let HA surface camera/network failures to the card.
+    except Exception as err:  # noqa: BLE001 - report device failures through WebSocket
         connection.send_error(msg["id"], "native_talk_failed", str(err))
         return
     connection.send_result(msg["id"], result)

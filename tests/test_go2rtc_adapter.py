@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from enum import Enum
 import importlib.util
+import sys
+from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-import sys
 
 
 class ConfigEntryState(Enum):

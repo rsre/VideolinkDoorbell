@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Print all audio/video profiles advertised by a camera's RTSP SDP."""
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ def main() -> int:
         for index, profile in enumerate(profiles, 1):
             print(f"{index}. {profile}")
         return 0
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports camera and transport failures
         print(f"RTSP profile probe failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
 

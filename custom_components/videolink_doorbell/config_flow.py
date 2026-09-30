@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
@@ -23,13 +22,13 @@ from .const import (
     CONF_CHANNEL,
     CONF_RTSP_PORT,
     CONF_STREAM,
-    CONF_VIDEO_SOURCE,
     CONF_VERIFY_SSL,
+    CONF_VIDEO_SOURCE,
     DEFAULT_CHANNEL,
     DEFAULT_RTSP_PORT,
     DEFAULT_STREAM,
-    DEFAULT_VIDEO_SOURCE,
     DEFAULT_VERIFY_SSL,
+    DEFAULT_VIDEO_SOURCE,
     DOMAIN,
     STREAMS,
     VIDEO_SOURCES,

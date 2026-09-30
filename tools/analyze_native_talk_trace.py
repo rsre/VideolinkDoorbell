@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
 """Summarize an official-app Baichuan talk relay trace."""
 
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from pathlib import Path
 import re
 import statistics
-
+from collections import Counter
+from itertools import pairwise
+from pathlib import Path
 
 LINE = re.compile(
     r"^(?P<timestamp>\d+(?:\.\d+)?) session=(?P<session>\d+) "
@@ -38,7 +37,7 @@ def analyze(trace_path: Path, prefix_path: Path | None = None) -> int:
         session_audio = [item for item in audio if item[1] == session]
         intervals.extend(
             right[0] - left[0]
-            for left, right in zip(session_audio, session_audio[1:])
+            for left, right in pairwise(session_audio)
             if right[0] - left[0] < 0.2
         )
     print(f"Audio writes: {len(audio)}")

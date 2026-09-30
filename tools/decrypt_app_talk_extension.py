@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Decrypt one official-app talk extension from private local PCAPs.
 
 The login and talk captures must come from the same TCP connection. The camera
@@ -10,16 +9,16 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 
-from native_talk import (  # noqa: E402
+from native_talk import (
     aes_cfb_decrypt,
     bc_encrypt,
     make_aes_key,

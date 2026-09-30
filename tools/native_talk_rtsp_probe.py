@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure native-talk send to RTSP-audio observation latency locally."""
 
 from __future__ import annotations
@@ -8,19 +7,18 @@ import asyncio
 import getpass
 import math
 import os
-from pathlib import Path
 import shutil
 import struct
 import sys
 import time
 import wave
+from pathlib import Path
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 
-from native_talk import NativeTalkSession  # noqa: E402
-
+from native_talk import NativeTalkSession
 
 SAMPLE_RATE = 16_000
 TONE_FREQUENCY = 440.0
@@ -99,7 +97,7 @@ class RtspAudioCapture:
         if shutil.which("ffmpeg") is None:
             raise RuntimeError("ffmpeg is required; install it and retry")
         if self.record:
-            self.writer = wave.open(self.record, "wb")
+            self.writer = wave.open(self.record, "wb")  # noqa: SIM115 - closed by close()
             self.writer.setnchannels(1)
             self.writer.setsampwidth(2)
             self.writer.setframerate(SAMPLE_RATE)
@@ -289,7 +287,7 @@ async def probe(args: argparse.Namespace) -> int:
         stop.set()
         await capture_task
         return 0
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports camera and transport failures
         print(f"RTSP probe failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
     finally:

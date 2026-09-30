@@ -20,11 +20,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import VideolinkAuthError, VideolinkClient, VideolinkConnectionError
 from .const import (
     CONF_CHANNEL,
+    CONF_VERIFY_SSL,
     DEFAULT_CHANNEL,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
     PLATFORMS,
-    CONF_VERIFY_SSL,
 )
 from .websocket import async_register as async_register_websocket
 

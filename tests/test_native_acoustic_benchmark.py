@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import importlib.util
 import json
 import math
 import stat
-from pathlib import Path
 import struct
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from aiohttp import ThreadedResolver
-
 
 TOOLS = Path(__file__).parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Print every native-talk profile advertised by a Reolink camera."""
 
 from __future__ import annotations
@@ -7,13 +6,13 @@ import argparse
 import asyncio
 import getpass
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 
-from native_talk import NativeTalkSession  # noqa: E402
+from native_talk import NativeTalkSession
 
 
 async def probe(args: argparse.Namespace) -> int:
@@ -61,7 +60,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return asyncio.run(probe(args))
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports camera and transport failures
         print(f"native talk profile probe failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
 

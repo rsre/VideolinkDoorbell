@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import importlib.util
-from pathlib import Path
 import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-
 
 API_PATH = Path(__file__).parents[1] / "custom_components/videolink_doorbell/api.py"
 SPEC = importlib.util.spec_from_file_location("videolink_api_under_test", API_PATH)

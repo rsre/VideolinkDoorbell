@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Record repeatable HA native-tone to doorbell-microphone observations."""
 
 from __future__ import annotations
@@ -6,23 +5,26 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-from datetime import datetime, timezone
 import getpass
 import json
 import math
 import os
-from pathlib import Path
 import statistics
 import struct
 import sys
 import time
-from urllib.parse import quote, urlsplit, urlunsplit
 import wave
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ThreadedResolver
-
-from native_talk_rtsp_probe import DETECT_FRAME_SAMPLES, SAMPLE_RATE, RtspAudioCapture, _detect_tone
-
+from native_talk_rtsp_probe import (
+    DETECT_FRAME_SAMPLES,
+    SAMPLE_RATE,
+    RtspAudioCapture,
+    _detect_tone,
+)
 
 TONE_SECONDS = 2.0  # The integration's native tone command sends a two-second tone.
 
@@ -141,7 +143,7 @@ class HomeAssistantNativeTone:
         access = tokens.get("access_token")
         refresh = tokens.get("refresh_token")
         if not isinstance(access, str) or not isinstance(refresh, str):
-            raise RuntimeError("Home Assistant did not return usable login tokens")
+            raise TypeError("Home Assistant did not return usable login tokens")
         return access, refresh
 
     async def _revoke_refresh_token(self) -> None:
@@ -152,12 +154,11 @@ class HomeAssistantNativeTone:
             async with ClientSession(
                 timeout=ClientTimeout(total=10),
                 connector=TCPConnector(resolver=ThreadedResolver()),
-            ) as session:
-                async with session.post(
-                    f"{self.base_url}/auth/revoke", data={"token": token}
-                ) as response:
-                    response.raise_for_status()
-        except Exception:
+            ) as session, session.post(
+                f"{self.base_url}/auth/revoke", data={"token": token}
+            ) as response:
+                response.raise_for_status()
+        except Exception:  # noqa: BLE001 - warn if best-effort token revocation fails
             print("Warning: could not revoke the temporary Home Assistant login", file=sys.stderr)
 
     async def _read_messages(self) -> None:
@@ -197,7 +198,7 @@ class HomeAssistantNativeTone:
                 future = self._pending.pop(response.get("id"), None)
                 if future is not None and not future.done():
                     future.set_result(response)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - propagate socket failures to pending commands
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(err)
@@ -249,9 +250,8 @@ class HomeAssistantNativeTone:
             "action": action,
             "entity_id": self.entity_id,
         }
-        if action != "start":
-            if self.session_token:
-                message["token"] = self.session_token
+        if action != "start" and self.session_token:
+            message["token"] = self.session_token
         if action == "subscribe" and dump_raw:
             message["dump_raw"] = True
             if decrypt_headers:
@@ -326,14 +326,14 @@ class HomeAssistantNativeTone:
                     if batch["done"] or next_cursor <= cursor:
                         break
                     cursor = next_cursor
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - preserve raw-capture retrieval failure
             capture_error = err
         finally:
             try:
                 if self.socket is not None and (self.session_token or self._legacy_session_started):
                     await self.command("stop", timeout=8, allow_missing_token=self._legacy_session_started)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - socket cleanup must continue after stop fails
+                print("Warning: could not stop native talk cleanly", file=sys.stderr)
             try:
                 if self.socket is not None:
                     await self.socket.close()
@@ -513,7 +513,7 @@ async def _run_trial(
             result["native_mix_tone_continuity"] = tone_continuity(
                 client.mix_tone_presence_flags, TONE_SECONDS
             )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - record any trial failure in the report
         result["status"] = "error"
         result["error"] = f"{type(err).__name__}: {err}"
     finally:
@@ -646,7 +646,7 @@ def main() -> int:
         parser.error("runs must be positive, channel nonnegative, observe positive, and RTSP port valid")
     try:
         return asyncio.run(benchmark(args))
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports failures without a traceback
         print(f"benchmark failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
 

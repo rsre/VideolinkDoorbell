@@ -102,7 +102,7 @@ class VideolinkWebCamera(Camera):
             else:
                 video_url = await self._client.flv_url(self._channel, self._stream)
             await self._async_register_go2rtc_sources(video_url)
-        except Exception:  # noqa: BLE001 - retain the entity if refresh fails
+        except Exception:
             _LOGGER.exception("Unable to refresh the camera video source")
         self.async_write_ha_state()
 
@@ -152,7 +152,7 @@ class VideolinkWebCamera(Camera):
                     f"ffmpeg:{identifier}#audio=opus",
                 ],
             )
-        except Exception:  # noqa: BLE001 - video should survive provider failures
+        except Exception:
             _LOGGER.exception(
                 "Unable to register the RTSP two-way-audio backchannel with go2rtc"
             )

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Exercise native Baichuan login/configuration without Home Assistant."""
 
 from __future__ import annotations
@@ -8,17 +7,18 @@ import asyncio
 import getpass
 import math
 import os
+import statistics
 import struct
 import sys
-import statistics
 import time
 import wave
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 
-from native_talk import NativeTalkSession  # noqa: E402
+from native_talk import NativeTalkSession
 
 
 async def probe(args: argparse.Namespace) -> int:
@@ -69,7 +69,7 @@ async def probe(args: argparse.Namespace) -> int:
                 next_deadline += block_size / config.sample_rate
             print(f"Audio sent: {len(samples)} samples")
             if len(send_times) > 1:
-                intervals = [right - left for left, right in zip(send_times, send_times[1:])]
+                intervals = [right - left for left, right in pairwise(send_times)]
                 print(
                     "Audio cadence: "
                     f"mean={statistics.mean(intervals) * 1000:.1f} ms, "
@@ -81,15 +81,15 @@ async def probe(args: argparse.Namespace) -> int:
             # truncate or make the tail of the tone sound choppy.
             await asyncio.sleep(args.drain)
         return 0
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports camera and transport failures
         print(f"Native probe failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
     finally:
         if talk_open:
             try:
                 await session.stop_talk()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - cleanup must continue after a failed reset
+                print("Warning: could not stop native talk cleanly", file=sys.stderr)
         await session.close()
 
 

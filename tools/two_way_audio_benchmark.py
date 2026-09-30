@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Benchmark native and direct-camera RTSP two-way audio."""
 
 from __future__ import annotations
@@ -9,13 +8,15 @@ import base64
 import json
 import os
 import queue
-from pathlib import Path
 import statistics
 import struct
 import sys
 import threading
 import time
 import urllib.parse
+from itertools import pairwise
+from pathlib import Path
+
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -96,13 +97,13 @@ def wait_for_audio_producer(timeout: float = 10.0) -> float:
         time.sleep(0.05)
     raise RuntimeError("go2rtc audio producer did not become active")
 
-from native_talk import NativeTalkSession  # noqa: E402
-from api import VideolinkClient  # noqa: E402
-from native_talk_rtsp_probe import (  # noqa: E402
+from api import VideolinkClient
+from native_talk import NativeTalkSession
+from native_talk_rtsp_probe import (
     RtspAudioCapture,
     _tone,
 )
-from rtsp_backchannel import RtspBackchannel  # noqa: E402
+from rtsp_backchannel import RtspBackchannel
 
 
 class HomeAssistantNativeTalk:
@@ -319,7 +320,7 @@ async def _run_native_ptt(runs: int, seconds: float) -> None:
                 # Match the card's delayed native playback drain before stop.
                 await asyncio.sleep(2.0)
                 await bridge.command("stop")
-            intervals = [right - left for left, right in zip(frame_times, frame_times[1:])]
+            intervals = [right - left for left, right in pairwise(frame_times)]
             cadence = statistics.mean(intervals) * 1000 if intervals else 0.0
             duration = (frame_times[-1] - frame_times[0]) if len(frame_times) > 1 else 0.0
             reports.append((len(frame_times), cadence, duration))
@@ -684,7 +685,7 @@ def main() -> int:
         parser.error("run counts cannot be negative")
     try:
         return asyncio.run(benchmark(args))
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - CLI reports failures without a traceback
         print(f"benchmark failed: {type(err).__name__}: {err}", file=sys.stderr)
         return 1
 
