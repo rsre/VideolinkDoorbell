@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components import websocket_api
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -50,12 +51,24 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "unauthorized", "Camera control permission required")
         return
     entity = er.async_get(hass).async_get(msg["entity_id"])
-    if entity is None or entity.platform != DOMAIN or not entity.config_entry_id:
+    if (
+        entity is None
+        or entity.domain != "camera"
+        or entity.platform != DOMAIN
+        or entity.disabled_by is not None
+        or not entity.config_entry_id
+    ):
         connection.send_error(msg["id"], "not_supported", "Entity is not a Videolink camera")
         return
     entry = hass.config_entries.async_get_entry(entity.config_entry_id)
-    client = entry.runtime_data.client if entry is not None else None
-    if not isinstance(client, VideolinkClient):
+    runtime = getattr(entry, "runtime_data", None)
+    client = getattr(runtime, "client", None)
+    if (
+        entry is None
+        or entry.state is not ConfigEntryState.LOADED
+        or not isinstance(client, VideolinkClient)
+        or hass.states.get(msg["entity_id"]) is None
+    ):
         connection.send_error(msg["id"], "not_ready", "Videolink camera is not ready")
         return
 

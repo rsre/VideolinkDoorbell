@@ -69,6 +69,7 @@ def boundaries(monkeypatch: pytest.MonkeyPatch):
         "homeassistant.config_entries",
         ConfigFlow=ConfigFlow,
         ConfigEntry=object,
+        ConfigEntryState=SimpleNamespace(LOADED="loaded"),
     )
     _module(
         monkeypatch,
@@ -295,10 +296,11 @@ async def test_websocket_audio_requires_exact_negotiated_frame(boundaries, monke
     monkeypatch.setattr(websocket, "VideolinkClient", Client)
     client = Client()
     boundaries.registry.async_get.return_value = SimpleNamespace(
-        platform="videolink_doorbell", config_entry_id="entry-1"
+        domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry-1"
     )
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(client=client), data={"channel": 0})
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client), data={"channel": 0})
     hass = SimpleNamespace(
+        states=SimpleNamespace(get=lambda _: object()),
         config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry)
     )
     connection = SimpleNamespace(
@@ -341,10 +343,11 @@ async def test_start_has_cleanup_before_subscribe(boundaries, monkeypatch):
     client = Client()
     client.native_talk_stop = AsyncMock()
     monkeypatch.setattr(websocket, "VideolinkClient", Client)
-    boundaries.registry.async_get.return_value = SimpleNamespace(platform="videolink_doorbell", config_entry_id="entry")
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(client=client), data={})
+    boundaries.registry.async_get.return_value = SimpleNamespace(domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry")
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client), data={})
     tasks = []
     hass = SimpleNamespace(
+        states=SimpleNamespace(get=lambda _: object()),
         config_entries=SimpleNamespace(async_get_entry=lambda _: entry),
         async_create_task=lambda coro: tasks.append(asyncio.create_task(coro)),
     )
@@ -357,3 +360,35 @@ async def test_start_has_cleanup_before_subscribe(boundaries, monkeypatch):
     connection.subscriptions[1]()
     await asyncio.gather(*tasks)
     client.native_talk_stop.assert_awaited_once_with(owner=token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case,code", [
+    ("missing_runtime", "not_ready"), ("unloaded", "not_ready"),
+    ("event", "not_supported"), ("disabled", "not_supported"),
+    ("not_added", "not_ready"),
+])
+async def test_websocket_rejects_unready_or_non_camera_entities(boundaries, monkeypatch, case, code):
+    websocket = _load(monkeypatch, "websocket")
+    entity = SimpleNamespace(domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry")
+    boundaries.registry.async_get.return_value = entity
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=boundaries.Client()))
+    if case == "missing_runtime":
+        del entry.runtime_data
+    elif case == "unloaded":
+        entry.state = "not_loaded"
+    elif case == "event":
+        entity.domain = "event"
+    elif case == "disabled":
+        entity.disabled_by = "user"
+    hass = SimpleNamespace(
+        config_entries=SimpleNamespace(async_get_entry=lambda _: entry),
+        states=SimpleNamespace(get=lambda _: None if case == "not_added" else object()),
+    )
+    connection = SimpleNamespace(
+        user=SimpleNamespace(permissions=SimpleNamespace(check_entity=lambda *args: True)),
+        send_error=Mock(), send_result=Mock(),
+    )
+    await websocket.websocket_native_talk(hass, connection, {"id": 1, "entity_id": "camera.front", "action": "start"})
+    assert connection.send_error.call_args.args[1] == code
+    connection.send_result.assert_not_called()
