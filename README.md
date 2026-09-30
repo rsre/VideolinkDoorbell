@@ -85,8 +85,8 @@ Home Assistant must be used over HTTPS (or localhost) because browsers block mic
 - In native mode, incoming audio uses the decoded camera-microphone channel of
   the Baichuan mix when playable frames arrive. The card falls back to the
   WebRTC camera-audio track if native mix is unavailable, silent at startup, or
-  stops. The app's proprietary AEC is not part of this playback path; see
-  [AEC.md](AEC.md) for what reproducing it would involve.
+  stops. The app's proprietary AEC is not used; see [AEC.md](AEC.md) for the
+  echo cancellation decision and browser measurement.
 - `video_fit` controls the video layout (default is `contain`):
   - `contain` scales the entire frame with letterboxing,
   - `cover` crops it,

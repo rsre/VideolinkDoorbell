@@ -185,7 +185,6 @@ class NativeMixFrame:
 
     far_end: bytes
     near_end: bytes
-    cleaned_near_end: bytes | None = None
 
     @property
     def incoming_pcm(self) -> bytes:
@@ -249,38 +248,6 @@ def _plausible_pcm16(data: bytes) -> bool:
         return True
     difference_energy = sum((current - previous) ** 2 for previous, current in zip(samples, samples[1:]))
     return difference_energy * 2 < energy * 3
-
-
-class AdaptiveEchoCanceller:
-    """Small normalized-LMS canceller for paired 16-bit PCM mix buffers."""
-
-    def __init__(self, *, taps: int = 128, step: float = 0.08) -> None:
-        self._weights = [0.0] * taps
-        self._history = [0.0] * taps
-        self._step = step
-
-    def process(self, frame: NativeMixFrame) -> NativeMixFrame:
-        """Estimate far-end leakage from near-end PCM and return the residual."""
-        if len(frame.far_end) != len(frame.near_end) or len(frame.far_end) % 2:
-            raise ValueError("mix buffers must have equal complete PCM16 samples")
-        far = struct.unpack(f"<{len(frame.far_end) // 2}h", frame.far_end)
-        near = struct.unpack(f"<{len(frame.near_end) // 2}h", frame.near_end)
-        cleaned = []
-        for desired, reference in zip(near, far):
-            self._history.insert(0, reference / 32768.0)
-            self._history.pop()
-            estimate = sum(weight * sample for weight, sample in zip(self._weights, self._history))
-            error = desired / 32768.0 - estimate
-            energy = 1e-4 + sum(sample * sample for sample in self._history)
-            correction = self._step * error / energy
-            for index, sample in enumerate(self._history):
-                self._weights[index] += correction * sample
-            cleaned.append(max(-32768, min(32767, round(error * 32768))))
-        return NativeMixFrame(
-            frame.far_end,
-            frame.near_end,
-            struct.pack(f"<{len(cleaned)}h", *cleaned),
-        )
 
 
 class NativeTalkPacketizer:
@@ -1314,7 +1281,7 @@ class NativeTalkChannel:
         await self.start()
 
     def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:
-        """Set the callback for cleaned camera mix frames."""
+        """Set the callback for validated camera mix frames."""
         self.mix_frame_callback = callback
         if self.transport is not None:
             self.transport.mix_frame_callback = callback

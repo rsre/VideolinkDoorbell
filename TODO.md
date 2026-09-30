@@ -118,10 +118,9 @@ Still requires a verified camera/app capture or on-device test:
 - [x] Validate the SDK TalkAbility query (operation 2157) against the camera.
       The app's wire request is MSG 10 with an encrypted 125-byte XML extension
       and message number 0. Both differences were tested separately.
-- [ ] Decide whether SDK ONNX/JNI AEC can be legally and practically reused.
-      The Python LMS filter is not model parity and has been removed from the
-      incoming playback path; do not re-enable it without channel-direction
-      and quality validation.
+- [x] Decide whether to reproduce the SDK ONNX/JNI AEC. After testing the
+      official app, the user found its benefit insufficient. Do not pursue
+      this pipeline; keep the browser AEC and default mute-while-talking path.
 - [x] Test session open/stop at PTT boundaries on one logged-in connection.
       Three silent cycles succeeded after fixing a duplicate mix-reader task;
       open acknowledgements took 55.5, 106.2, and 68.3 ms. Keep the card's
@@ -211,14 +210,12 @@ Still requires a verified camera/app capture or on-device test:
       and play validated far-end PCM in the card. The HA subscription is
       established immediately after open acknowledgement; WebRTC remains the
       fallback if native mix is not playable.
-- [ ] Evaluate SDK-style AEC for the local near-end microphone signal using
-      far-end audio as reference. This is separate from incoming mix playback;
-      JNI/model parity and browser capture/reference alignment remain unverified.
-      A local browser speaker-to-microphone test found at least 45.2 dB of
-      echo attenuation with browser AEC on (AEC-off tone levels -44.0/-42.9 dB;
-      AEC-on tone below the noise floor). Next verify near-end speech quality
-      while native mix plays during full-duplex talk before considering a
-      custom or SDK-derived AEC path.
+- [x] Measure browser echo cancellation on the Home Assistant browser device.
+      A local speaker-to-microphone test found at least 45.2 dB attenuation;
+      the AEC-on tones were below the measured noise floor. This supports the
+      current browser AEC setting but does not establish full duplex speech
+      quality. The official app's native AEC was tested separately and is not
+      being adopted.
 - [x] Confirm native stop/close behavior and recovery after interruption;
       verified across three consecutive camera sessions.
 

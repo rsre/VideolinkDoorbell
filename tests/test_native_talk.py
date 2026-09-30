@@ -228,7 +228,6 @@ async def test_mix_reader_decrypts_verified_pcm_and_forwards_it() -> None:
     assert frames[0].far_end == pcm
     assert frames[0].near_end == bytes(2048)
     assert frames[0].incoming_pcm == pcm
-    assert frames[0].cleaned_near_end is None
 
 
 async def _wait_for_forwarded(session) -> None:

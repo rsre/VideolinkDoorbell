@@ -422,7 +422,7 @@ class VideolinkClient:
         await asyncio.sleep(1.0)
 
     async def native_talk_set_mix_callback(self, callback, *, owner: str | None = None) -> None:
-        """Set the consumer for cleaned native mix audio."""
+        """Set the consumer for validated native mix audio."""
         if self._native_talk_owner != owner:
             raise VideolinkError("Native talk belongs to another card")
         if self._native_talk is None or not self._native_talk.active:
