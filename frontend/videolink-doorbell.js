@@ -1,10 +1,13 @@
-const CARD_VERSION = "0.12.56";
+const CARD_VERSION = "0.12.57";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this._hass = undefined;
+    this._haConnection = undefined;
+    this._haCleanup = Promise.resolve();
+    this._socketDisconnected = false;
     this._config = undefined;
     this._peer = undefined;
     this._remoteStream = undefined;
@@ -168,7 +171,9 @@ class VideolinkDoorbellCard extends HTMLElement {
   set hass(hass) {
     const firstUpdate = !this._hass;
     this._hass = hass;
-    if (firstUpdate && this.isConnected) {
+    const connectionChanged = this._bindHaConnection();
+    if (connectionChanged) this._queueHaCleanup("clean up replaced HA connection");
+    if ((firstUpdate || connectionChanged) && this.isConnected) {
       this._runLifecycle("start stream", () => this._start());
     }
     this._updateTitle();
@@ -199,6 +204,7 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   connectedCallback() {
     this._render();
+    this._bindHaConnection();
     this._runLifecycle("start stream", () => this._start());
     document.addEventListener("visibilitychange", this._visibilityHandler);
     window.addEventListener("blur", this._windowBlurHandler);
@@ -207,7 +213,63 @@ class VideolinkDoorbellCard extends HTMLElement {
   disconnectedCallback() {
     document.removeEventListener("visibilitychange", this._visibilityHandler);
     window.removeEventListener("blur", this._windowBlurHandler);
-    this._runLifecycle("clean up stream", () => this._cleanup());
+    this._bindHaConnection();
+    this._queueHaCleanup("clean up stream");
+  }
+
+  _bindHaConnection() {
+    const connection = this.isConnected ? this._hass?.connection : undefined;
+    if (connection === this._haConnection) return false;
+    const previous = this._haConnection;
+    previous?.removeEventListener?.("disconnected", this._haDisconnected);
+    previous?.removeEventListener?.("ready", this._haReady);
+    this._haConnection = connection;
+    connection?.addEventListener?.("disconnected", this._haDisconnected);
+    connection?.addEventListener?.("ready", this._haReady);
+    return Boolean(previous && connection);
+  }
+
+  _queueHaCleanup(operation) {
+    // Invalidate pending negotiation and disable PTT before any async teardown.
+    this._connectionGeneration += 1;
+    this._streamReady = false;
+    this._updateTalkButton();
+    const previous = this._haCleanup;
+    this._haCleanup = this._runLifecycle(operation, async () => {
+      await previous;
+      await this._cleanup();
+    });
+    return this._haCleanup;
+  }
+
+  _haDisconnected = () => {
+    // HA already disposes subscriptions and their native owners on socket loss.
+    // Old command IDs must never be unsubscribed on a newly opened socket.
+    this._socketDisconnected = true;
+    this._queueHaCleanup("clean up lost HA connection");
+  };
+
+  _haReady = () => {
+    this._runLifecycle("restore HA connection", () => this._start());
+  };
+
+  async _subscribeMessage(callback, message, connection = this._hass.connection) {
+    // The HA connection library leaves an unacknowledged, non-resubscribing
+    // subscription pending after socket loss. Release our waiter explicitly.
+    let disconnected;
+    const interrupted = new Promise((_resolve, reject) => {
+      disconnected = () => reject(new Error("Home Assistant connection lost"));
+      connection.addEventListener?.("disconnected", disconnected);
+    });
+    try {
+      if (connection.connected === false) throw new Error("Home Assistant connection lost");
+      return await Promise.race([
+        connection.subscribeMessage(callback, message, { resubscribe: false }),
+        interrupted,
+      ]);
+    } finally {
+      connection.removeEventListener?.("disconnected", disconnected);
+    }
   }
 
   _visibilityHandler = () => {
@@ -436,11 +498,13 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   _isCurrentConnection(generation) {
-    return generation === this._connectionGeneration && this.isConnected && !document.hidden;
+    return generation === this._connectionGeneration && this.isConnected && !document.hidden
+      && this._hass?.connection?.connected !== false;
   }
 
   _scheduleReconnect(immediate = false) {
-    if (this._reconnectTimer !== undefined || !this.isConnected || document.hidden) return;
+    if (this._reconnectTimer !== undefined || !this.isConnected || document.hidden
+      || this._hass?.connection?.connected === false) return;
     const delay = immediate ? 0 : Math.min(30000, 1000 * (2 ** this._reconnectAttempt));
     this._reconnectAttempt += 1;
     this._reconnectTimer = window.setTimeout(() => {
@@ -450,7 +514,9 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _start() {
-    if (this._startingGeneration !== undefined || this._peer || !this._hass || !this._config || document.hidden) return;
+    await this._haCleanup;
+    if (this._startingGeneration !== undefined || this._peer || !this.isConnected
+      || !this._hass || !this._config || document.hidden || this._hass.connection?.connected === false) return;
     const generation = ++this._connectionGeneration;
     this._startingGeneration = generation;
     this._streamReady = false;
@@ -498,6 +564,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           this._updateTalkButton();
           if (this._config.talk_mode === "native" && !this._controlsHidden) {
             this._ensureNativeTalkSession().catch((error) => {
+              if (!this._isCurrentConnection(generation)) return;
               this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
               console.error("[Videolink] Native talk unavailable", error);
               this._setStatus("Native talk is unavailable. Try again.");
@@ -533,7 +600,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         return;
       }
 
-      this._unsubscribe = this._hass.connection.subscribeMessage(
+      this._unsubscribe = this._subscribeMessage(
         (event) => this._handleSignal(event, generation).catch((error) => {
           if (this._isCurrentConnection(generation)) {
             this._setStatus(`WebRTC signaling failed: ${error?.message || error}`);
@@ -544,7 +611,7 @@ class VideolinkDoorbellCard extends HTMLElement {
           type: "camera/webrtc/offer",
           entity_id: this._config.entity,
           offer: peer.localDescription?.sdp || offer.sdp,
-        }
+        },
       );
     } catch (error) {
       if (generation === this._connectionGeneration) {
@@ -1046,11 +1113,14 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   async _ensureNativeTalkSession() {
-    if (this._config?.talk_mode !== "native" || this._controlsHidden || !this._hass) return;
+    if (this._config?.talk_mode !== "native" || this._controlsHidden || !this._hass
+      || this._hass.connection?.connected === false) return;
     if (this._nativeSessionReady) return;
     if (this._nativeSessionStarting) return this._nativeSessionStarting;
+    const hass = this._hass;
+    this._nativeSessionHass = hass;
     this._nativeSessionStarting = (async () => {
-      const config = await this._hass.callWS({
+      const config = await hass.callWS({
         type: "videolink_doorbell/native_talk",
         action: "start",
         entity_id: this._config.entity,
@@ -1073,7 +1143,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       }
       try {
         const sessionToken = this._nativeToken;
-        this._nativeMixUnsubscribe = await this._hass.connection.subscribeMessage(
+        this._nativeMixUnsubscribe = await this._subscribeMessage(
           (message) => {
             if (this._nativeToken === sessionToken) this._playNativeMix(message);
           },
@@ -1083,14 +1153,14 @@ class VideolinkDoorbellCard extends HTMLElement {
             entity_id: this._config.entity,
             token: this._nativeToken,
           },
-          { resubscribe: false },
+          hass.connection,
         );
         if (this._nativeMixAvailable) {
           this._nativeMixSubscribedAt = performance.now();
           this._nativeMixWatchdog = window.setInterval(() => this._checkNativeMixHealth(), 1000);
         }
       } catch (error) {
-        await this._hass.callWS({
+        if (!this._socketDisconnected && hass.connection?.connected !== false) await hass.callWS({
           type: "videolink_doorbell/native_talk",
           action: "stop",
           entity_id: this._config.entity,
@@ -1136,16 +1206,17 @@ class VideolinkDoorbellCard extends HTMLElement {
       window.clearInterval(this._nativeMixWatchdog);
       this._nativeMixWatchdog = undefined;
     }
-    if (this._nativeMixUnsubscribe) {
+    const hass = this._nativeSessionHass || this._hass;
+    if (this._nativeMixUnsubscribe && !this._socketDisconnected && hass.connection?.connected !== false) {
       await Promise.resolve()
         .then(() => this._nativeMixUnsubscribe())
         .catch((error) => {
           this._diagnostics.nativeTalkError = this._formatNativeTalkError(error);
         });
-      this._nativeMixUnsubscribe = undefined;
     }
-    if (this._nativeToken) {
-      await this._hass.callWS({
+    this._nativeMixUnsubscribe = undefined;
+    if (this._nativeToken && !this._socketDisconnected && hass.connection?.connected !== false) {
+      await hass.callWS({
         type: "videolink_doorbell/native_talk",
         action: "stop",
         entity_id: this._config.entity,
@@ -1170,6 +1241,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._nativePlaybackChain = Promise.resolve();
     this._nativeSessionReady = false;
     this._nativeToken = undefined;
+    this._nativeSessionHass = undefined;
     this._nativeMixAvailable = false;
     this._nativeUsesMix = false;
     this._nativeMixSubscribedAt = undefined;
@@ -1529,6 +1601,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._reconnectTimer !== undefined) window.clearTimeout(this._reconnectTimer);
     this._reconnectTimer = undefined;
     this._streamReady = false;
+    this._updateTalkButton();
     this._stopDiagnostics();
     await this._stopMicrophone();
     await this._stopNativeTalkSession();
@@ -1544,9 +1617,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (this._video) this._video.srcObject = null;
     if (this._unsubscribe) {
       const unsubscribe = await this._unsubscribe.catch(() => undefined);
-      unsubscribe?.();
+      if (!this._socketDisconnected) unsubscribe?.();
       this._unsubscribe = undefined;
     }
+    this._socketDisconnected = false;
     if (clearStatus) this._setStatus("");
   }
 }

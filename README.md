@@ -282,6 +282,23 @@ python3.14 -m venv .venv-ha
 These tests exercise real entry setup, scheduled retries, entity registration,
 reauthentication and repeated reload/unload cycles with mocked device I/O.
 
+The browser suite additionally needs Node.js and Chromium. It runs the actual
+card against Home Assistant's HTTP/WebSocket server using the official HA
+connection library. Native device I/O is simulated; WebRTC uses a real browser
+peer pair and microphone capture uses Chromium's fake device. It covers socket
+loss, reconnect, interrupted subscriptions and competing card ownership.
+
+```sh
+.venv-ha/bin/python -m pip install -r requirements-browser-test.txt
+.venv-ha/bin/python -m playwright install chromium
+npm ci --prefix tests/browser
+npm run build --prefix tests/browser
+VIDEOLINK_BROWSER_TESTS=1 .venv-ha/bin/python -m pytest -q tests/ha/test_browser_lifecycle.py
+```
+
+The browser tests are skipped in ordinary Python runs and run in a dedicated CI
+job. On Linux, use `playwright install --with-deps chromium` for system libraries.
+
 
 ## Standalone protocol client
 

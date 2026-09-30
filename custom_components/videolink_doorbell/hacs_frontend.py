@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 CARD_URL = "/videolink_doorbell/videolink-doorbell.js"
 LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
 CARD_PATH = Path(__file__).parent / "frontend" / "videolink-doorbell.js"
-CARD_VERSION = "0.12.56"
+CARD_VERSION = "0.12.57"
 
 
 async def async_setup(hass: HomeAssistant) -> None:

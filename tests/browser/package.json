@@ -1,0 +1,13 @@
+{
+  "name": "videolink-browser-regressions",
+  "private": true,
+  "scripts": {
+    "build": "esbuild harness.js --bundle --format=esm --outfile=dist/harness.js"
+  },
+  "dependencies": {
+    "home-assistant-js-websocket": "9.7.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
