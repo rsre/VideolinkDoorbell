@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from aiohttp import ClientResponseError, RequestInfo
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 API_PATH = Path(__file__).parents[1] / "custom_components/videolink_doorbell/api.py"
 SPEC = importlib.util.spec_from_file_location("videolink_api_under_test", API_PATH)
@@ -16,6 +20,36 @@ assert SPEC is not None and SPEC.loader is not None
 api = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = api
 SPEC.loader.exec_module(api)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot", [False, True])
+async def test_http_errors_do_not_expose_tokens(snapshot: bool) -> None:
+    url = URL("https://camera.local/cgi-bin/api.cgi?token=secret-sentinel")
+    request = RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url)
+
+    class Response:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        def raise_for_status(self):
+            raise ClientResponseError(request, (), status=503)
+
+    class Session:
+        get = post = lambda *args, **kwargs: Response()
+
+    client = api.VideolinkClient(Session(), "camera.local", "user", "password")
+    client._token = "secret-sentinel"
+    client._token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    with pytest.raises(api.VideolinkConnectionError) as caught:
+        if snapshot:
+            await client.snapshot(0)
+        else:
+            await client._request([{"cmd": "GetDevInfo"}], client._token)
+    assert "secret-sentinel" not in "".join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.parametrize(

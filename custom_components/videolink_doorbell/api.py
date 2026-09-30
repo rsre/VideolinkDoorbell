@@ -142,7 +142,11 @@ class VideolinkClient:
                 response.raise_for_status()
                 payload = await response.json(content_type=None)
         except (ClientError, TimeoutError, ValueError) as err:
-            raise VideolinkConnectionError(str(err)) from err
+            # aiohttp exceptions retain the request URL, including its token.
+            # Neither the public error nor its traceback may expose that URL.
+            raise VideolinkConnectionError(
+                f"{cmd} request failed ({type(err).__name__})"
+            ) from None
         if (
             not isinstance(payload, list)
             or not payload
@@ -261,7 +265,9 @@ class VideolinkClient:
                     response.raise_for_status()
                     data = await response.read()
             except (ClientError, TimeoutError) as err:
-                raise VideolinkConnectionError(str(err)) from err
+                raise VideolinkConnectionError(
+                    f"Snapshot request failed ({type(err).__name__})"
+                ) from None
             if data.startswith(b"\xff\xd8"):
                 return data
             self._token = None
