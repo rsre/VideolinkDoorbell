@@ -261,3 +261,9 @@ async def test_new_card_claim_replaces_previous_native_talk_owner(monkeypatch) -
     assert new_channel.stopped is False
     await client.native_talk_stop(owner="new-card")
     assert new_channel.stopped is True
+
+
+@pytest.mark.parametrize("host", ["http://[", "[", "https://[invalid]", "camera.local:bad", "camera.local/path"])
+def test_invalid_hosts_raise_validation_errors(host):
+    with pytest.raises(api.VideolinkInvalidHostError):
+        api.VideolinkClient._normalize_host(host)

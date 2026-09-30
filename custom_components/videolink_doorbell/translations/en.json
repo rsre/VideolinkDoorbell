@@ -10,7 +10,8 @@
       "cannot_connect": "Failed to connect to the camera.",
       "invalid_auth": "Invalid username or password.",
       "unknown": "Unexpected error while communicating with the camera.",
-      "missing_identity": "The camera did not provide a serial number. Check its firmware and connection settings."
+      "missing_identity": "The camera did not provide a serial number. Check its firmware and connection settings.",
+      "invalid_host": "Enter a valid hostname or IP address without credentials, a path, or a port. Use the separate port field."
     },
     "step": {
       "user": {

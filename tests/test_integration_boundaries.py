@@ -155,6 +155,7 @@ def boundaries(monkeypatch: pytest.MonkeyPatch):
         VideolinkClient=Client,
         VideolinkAuthError=type("AuthError", (Exception,), {}),
         VideolinkConnectionError=type("ConnectionError", (Exception,), {}),
+        VideolinkInvalidHostError=type("InvalidHostError", (Exception,), {}),
         VideolinkError=type("VideolinkError", (Exception,), {}),
     )
     _module(

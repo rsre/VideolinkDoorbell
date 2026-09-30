@@ -85,3 +85,17 @@ async def test_new_entries_require_stable_identity(configured_flow):
     flow._async_validate.return_value = DeviceInfo("Front", "Model", "", "FW")
     result = await flow.async_step_user({"host": "camera.local", "port": 443})
     assert result["errors"] == {"base": "missing_identity"}
+
+
+@pytest.mark.asyncio
+async def test_malformed_url_shows_actionable_flow_error(configured_flow, monkeypatch):
+    from custom_components.videolink_doorbell import config_flow
+
+    flow, _ = configured_flow
+    flow.context = {"source": "user"}
+    flow._async_validate = VideolinkWebConfigFlow._async_validate.__get__(flow)
+    monkeypatch.setattr(config_flow, "async_get_clientsession", Mock(return_value=object()))
+    result = await flow.async_step_user({
+        "host": "http://[", "port": 443, "username": "admin", "password": "test", "verify_ssl": True,
+    })
+    assert result["errors"] == {"base": "invalid_host"}

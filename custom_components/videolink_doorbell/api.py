@@ -40,6 +40,10 @@ class VideolinkError(Exception):
     """Base Videolink client error."""
 
 
+class VideolinkInvalidHostError(VideolinkError):
+    """Raised when the supplied host is invalid."""
+
+
 class VideolinkAuthError(VideolinkError):
     """Raised when camera authentication fails."""
 
@@ -93,8 +97,11 @@ class VideolinkClient:
         """Validate and normalize a hostname or IP address without a path."""
         raw_host = host.strip()
         if not raw_host:
-            raise VideolinkError("Host is required")
-        parsed = urlsplit(raw_host if "://" in raw_host else f"//{raw_host}")
+            raise VideolinkInvalidHostError("Host is required")
+        try:
+            parsed = urlsplit(raw_host if "://" in raw_host else f"//{raw_host}")
+        except ValueError:
+            raise VideolinkInvalidHostError("Host is invalid") from None
         if (
             parsed.scheme not in ("", "http", "https")
             or parsed.username is not None
@@ -103,15 +110,15 @@ class VideolinkClient:
             or parsed.query
             or parsed.fragment
         ):
-            raise VideolinkError("Host must be a hostname or IP address without a path")
+            raise VideolinkInvalidHostError("Host must be a hostname or IP address without a path")
         try:
             parsed_port = parsed.port
-        except ValueError as err:
-            raise VideolinkError("Host contains an invalid port") from err
+        except ValueError:
+            raise VideolinkInvalidHostError("Host contains an invalid port") from None
         if parsed_port is not None:
-            raise VideolinkError("Enter the HTTPS port in the separate port field")
+            raise VideolinkInvalidHostError("Enter the HTTPS port in the separate port field")
         if parsed.hostname is None:
-            raise VideolinkError("Host is invalid")
+            raise VideolinkInvalidHostError("Host is invalid")
         return parsed.hostname
 
     @property

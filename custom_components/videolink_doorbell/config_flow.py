@@ -17,6 +17,7 @@ from .api import (
     VideolinkClient,
     VideolinkConnectionError,
     VideolinkError,
+    VideolinkInvalidHostError,
 )
 from .const import (
     CONF_CHANNEL,
@@ -167,6 +168,8 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 info = await self._async_validate(user_input)
                 unique_id = self._unique_id(info, user_input)
+            except VideolinkInvalidHostError:
+                errors["base"] = "invalid_host"
             except MissingIdentityError:
                 errors["base"] = "missing_identity"
             except VideolinkAuthError:
@@ -210,6 +213,8 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 info = await self._async_validate(updated)
                 await self._async_check_identity(entry, info, updated)
+            except VideolinkInvalidHostError:
+                errors["base"] = "invalid_host"
             except MissingIdentityError:
                 errors["base"] = "missing_identity"
             except VideolinkAuthError:
@@ -247,6 +252,8 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 info = await self._async_validate(updated)
                 await self._async_check_identity(entry, info, updated)
+            except VideolinkInvalidHostError:
+                errors["base"] = "invalid_host"
             except MissingIdentityError:
                 errors["base"] = "missing_identity"
             except VideolinkAuthError:
