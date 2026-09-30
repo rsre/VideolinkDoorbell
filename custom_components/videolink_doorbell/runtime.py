@@ -16,6 +16,7 @@ from .api import DeviceInfo, VideolinkClient, VideolinkConnectionError
 from .capture import NativeCaptureStore
 
 if TYPE_CHECKING:
+    from .stream import VideolinkStreams
     from .subscription import DoorbellSubscription
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,9 +37,23 @@ class VideolinkRuntime:
     _starts: set[asyncio.Task] = field(default_factory=set, init=False)
     _cleanups: list[Callable[[], Awaitable[None]]] = field(default_factory=list, init=False)
     _captures: NativeCaptureStore = field(default_factory=NativeCaptureStore, init=False)
+    _streams: VideolinkStreams | None = field(default=None, init=False)
     _doorbell: DoorbellSubscription | None = field(default=None, init=False)
     _shutdown_task: asyncio.Task | None = field(default=None, init=False)
     _shutdown_unsub: Callable[[], None] | None = field(default=None, init=False)
+
+    @property
+    def streams(self) -> VideolinkStreams:
+        if self._streams is None:
+            from .stream import VideolinkStreams
+
+            self._streams = VideolinkStreams(self)
+            self.async_add_cleanup(self._streams.async_close)
+        return self._streams
+
+    async def async_config_entry_updated(self, _hass: HomeAssistant, entry: ConfigEntry) -> None:
+        if self._streams is not None:
+            await self._streams.async_config_entry_updated(entry)
 
     @property
     def doorbell(self) -> DoorbellSubscription:

@@ -10,6 +10,7 @@ pytest.importorskip("reolink_aio")
 
 from custom_components.videolink_doorbell.api import DeviceInfo
 from custom_components.videolink_doorbell.camera import VideolinkWebCamera
+from custom_components.videolink_doorbell.runtime import VideolinkRuntime
 
 
 @pytest.fixture
@@ -19,10 +20,14 @@ def camera():
         flv_url=AsyncMock(return_value="https://camera.local/flv?token=old"),
         rtsp_url=Mock(return_value="rtsp://camera.local/video"),
         snapshot=AsyncMock(return_value=b"jpeg"),
+        rtsp_backchannel_url=Mock(return_value="rtsp://camera.local/backchannel"),
     )
     entry = SimpleNamespace(data={}, title="Front", unique_id="serial_channel_0", async_start_reauth=Mock())
-    camera = VideolinkWebCamera(entry, client, DeviceInfo("Front", "Model", "serial", "FW"))
-    camera._async_register_go2rtc_sources = AsyncMock()
+    entry.runtime_data = VideolinkRuntime(client, DeviceInfo("Front", "Model", "serial", "FW"), Mock(), entry)
+    camera = VideolinkWebCamera(entry)
+    camera._sources._registration.async_ensure = AsyncMock()
+    camera._sources._registration.async_refresh_provider = AsyncMock()
+    camera._sources._camera = camera
     camera.async_write_ha_state = Mock()
     camera.hass = Mock()
     return camera
@@ -33,7 +38,7 @@ async def test_token_refresh_updates_existing_hls_stream(camera):
     old = await camera.stream_source()
     camera.stream = SimpleNamespace(source=old, update_source=Mock())
     camera._client.flv_url.return_value = "https://camera.local/flv?token=new"
-    await camera._async_refresh_active_source()
+    await camera._sources.async_refresh_active()
     camera.stream.update_source.assert_called_once_with("https://camera.local/flv?token=new")
 
 
@@ -41,13 +46,13 @@ async def test_token_refresh_updates_existing_hls_stream(camera):
 async def test_live_source_change_updates_existing_hls_stream(camera):
     old = await camera.stream_source()
     camera.stream = SimpleNamespace(source=old, update_source=Mock())
-    await camera.async_config_entry_updated(None, SimpleNamespace(data={"video_source": "rtsp"}))
+    await camera._entry.runtime_data.async_config_entry_updated(None, SimpleNamespace(data={"video_source": "rtsp"}))
     camera.stream.update_source.assert_called_once_with("rtsp://camera.local/video")
 
 
 @pytest.mark.asyncio
 async def test_unused_camera_does_not_refresh_urls(camera):
-    await camera._async_refresh_active_source()
+    await camera._sources.async_refresh_active()
     camera._client.flv_url.assert_not_awaited()
 
 
@@ -77,7 +82,7 @@ async def test_orientation_preserves_backchannel_through_core_provider(camera, m
     from homeassistant.components.camera import prefs
     from homeassistant.components.stream import Orientation
 
-    from custom_components.videolink_doorbell import camera as camera_module
+    from custom_components.videolink_doorbell import go2rtc as adapter
 
     settings = AsyncMock(return_value=SimpleNamespace(orientation=Orientation[orientation_name]))
     monkeypatch.setattr(prefs, "get_dynamic_camera_stream_settings", settings)
@@ -86,8 +91,8 @@ async def test_orientation_preserves_backchannel_through_core_provider(camera, m
     async def add(name, urls):
         registered[name] = SimpleNamespace(producers=[SimpleNamespace(url=url) for url in urls])
     streams = SimpleNamespace(list=AsyncMock(side_effect=lambda: registered), add=AsyncMock(side_effect=add))
-    monkeypatch.setattr(camera_module, "get_streams_api", Mock(return_value=streams))
-    camera._async_register_go2rtc_sources = VideolinkWebCamera._async_register_go2rtc_sources.__get__(camera)
+    monkeypatch.setattr(adapter, "get_streams_api", Mock(return_value=streams))
+    camera._sources._registration.async_ensure = adapter.Go2RtcRegistration.async_ensure.__get__(camera._sources._registration)
     camera._client.rtsp_backchannel_url = Mock(return_value="rtsp://camera.local/backchannel")
     camera.entity_id = "camera.front"
     camera.platform = SimpleNamespace(platform_name="videolink_doorbell")
@@ -101,3 +106,62 @@ async def test_orientation_preserves_backchannel_through_core_provider(camera, m
     assert (sources[0] == "https://camera.local/flv?token=old") == (orientation_name == "NO_TRANSFORM")
     assert "rtsp://camera.local/backchannel" in sources
     assert all(not url.startswith("ffmpeg:rtsp://camera.local/backchannel") for url in sources)
+
+
+@pytest.mark.asyncio
+async def test_public_sources_leave_registration_to_core(camera, monkeypatch):
+    from homeassistant.components import camera as core_camera
+
+    from custom_components.videolink_doorbell import go2rtc as adapter
+
+    monkeypatch.setattr(adapter, "supports_multiple_sources", lambda: True)
+    if not hasattr(core_camera, "CameraStreamSource"):
+        monkeypatch.setattr(core_camera, "CameraStreamSource", lambda url, orientation=None: SimpleNamespace(url=url, orientation=orientation), raising=False)
+    registration = camera._sources._registration
+    registration.async_ensure = adapter.Go2RtcRegistration.async_ensure.__get__(registration)
+    streams_api = SimpleNamespace(list=AsyncMock(), add=AsyncMock())
+    monkeypatch.setattr(adapter, "get_streams_api", Mock(return_value=streams_api))
+    sources = await camera.async_get_stream_sources()
+    assert [source.url for source in sources] == ["https://camera.local/flv?token=old", "rtsp://camera.local/backchannel"]
+    streams_api.list.assert_not_awaited()
+    streams_api.add.assert_not_awaited()
+    adapter.get_streams_api.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_source_change_asks_core_to_refresh_and_retries_failure(camera, monkeypatch):
+    from aiohttp import ClientError
+
+    from custom_components.videolink_doorbell import go2rtc as adapter
+
+    monkeypatch.setattr(adapter, "supports_multiple_sources", lambda: True)
+    registration = camera._sources._registration
+    registration.async_ensure = adapter.Go2RtcRegistration.async_ensure.__get__(registration)
+    registration.async_refresh_provider = adapter.Go2RtcRegistration.async_refresh_provider.__get__(registration)
+    provider = SimpleNamespace(domain="go2rtc", _update_stream_source=AsyncMock(side_effect=[ClientError(), None]))
+    camera._webrtc_provider = provider
+    await camera.stream_source()
+    camera.stream = SimpleNamespace(source="https://camera.local/flv?token=old", update_source=Mock())
+    camera._client.flv_url.return_value = "https://camera.local/flv?token=new"
+    await camera._sources.async_refresh_active()
+    assert camera._sources._provider_dirty
+    await camera._sources.async_refresh_active()
+    assert not camera._sources._provider_dirty
+    assert provider._update_stream_source.await_count == 2
+    camera.stream.update_source.assert_called_with("https://camera.local/flv?token=new")
+
+
+@pytest.mark.asyncio
+async def test_camera_removal_cancels_inflight_source_requests(camera):
+    import asyncio
+
+    entered = asyncio.Event()
+    async def source(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    camera._client.flv_url.side_effect = source
+    request = asyncio.create_task(camera.stream_source())
+    await entered.wait()
+    await camera._sources.async_detach(camera)
+    assert request.cancelled()
+    assert camera._sources._url is None

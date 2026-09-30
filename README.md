@@ -288,3 +288,19 @@ It has its own dependencies, license, package metadata and protocol tests, and
 imports no Home Assistant modules. HACS uses the bundled copy. Publishing the
 package and pinning the published dependency remain prerequisites for a future
 Core submission.
+
+## Runtime ownership
+
+Each config entry owns a lifecycle manager, a lazy doorbell subscription,
+bounded diagnostic captures and a stream source manager. Shutdown and unload
+cancel outstanding device work and close these resources. Event entities only
+consume availability and ring notifications; disabled entities open no event
+subscription. Camera entities apply source changes to Home Assistant's HLS
+worker, while the entry owns token refresh scheduling and configuration updates.
+
+On Home Assistant versions with the public multiple-source camera API, Core
+alone registers the video and RTSP backchannel producers. Home Assistant
+2026.9 needs a serialized composite-stream compatibility adapter. This legacy
+path still reads Core's private go2rtc client. Source renewal on newer versions
+uses a guarded provider refresh hook because Core has no public source-change
+notification API; that boundary is isolated in `go2rtc.py` and covered by tests.

@@ -105,6 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
         raise ConfigEntryNotReady("Camera returned invalid device information") from err
     runtime = entry.runtime_data = VideolinkRuntime(client, info, hass, entry)
     runtime.async_initialize()
+    entry.async_on_unload(entry.add_update_listener(runtime.async_config_entry_updated))
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
