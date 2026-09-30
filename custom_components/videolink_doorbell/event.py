@@ -19,7 +19,6 @@ from homeassistant.helpers.device_registry import DeviceInfo as HADeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from reolink_aio.api import Host
 
-from .api import VideolinkClient
 from .camera import device_identifier
 from .const import (
     CONF_CHANNEL,
@@ -28,6 +27,7 @@ from .const import (
     DEFAULT_VERIFY_SSL,
     DOMAIN,
 )
+from .runtime import VideolinkRuntime
 
 _LOGGER = logging.getLogger(__name__)
 _RETRY_SECONDS = 30
@@ -36,7 +36,7 @@ _CHECK_SECONDS = 60
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry[VideolinkClient],
+    entry: ConfigEntry[VideolinkRuntime],
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add one ring event entity for the configured doorbell channel."""
@@ -51,7 +51,7 @@ class VideolinkDoorbellRing(EventEntity):
     _attr_device_class = EventDeviceClass.DOORBELL
     _attr_event_types: ClassVar[list[str]] = [DoorbellEventType.RING]
 
-    def __init__(self, entry: ConfigEntry[VideolinkClient], hass: HomeAssistant) -> None:
+    def __init__(self, entry: ConfigEntry[VideolinkRuntime], hass: HomeAssistant) -> None:
         super().__init__()
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         if entry.unique_id is None:
@@ -64,10 +64,10 @@ class VideolinkDoorbellRing(EventEntity):
         self._host_ready = False
         self._callback_id = f"{DOMAIN}_{entry.entry_id}_ring"
         self._host = Host(
-            entry.runtime_data.host,
+            entry.runtime_data.client.host,
             entry.data[CONF_USERNAME],
             entry.data[CONF_PASSWORD],
-            port=entry.runtime_data.port,
+            port=entry.runtime_data.client.port,
             use_https=True,
             aiohttp_get_session_callback=lambda: async_get_clientsession(
                 hass, verify_ssl=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)

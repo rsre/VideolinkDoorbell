@@ -36,7 +36,7 @@ def test_visitor_rising_edges_produce_rings(monkeypatch: pytest.MonkeyPatch) -> 
         data={CONF_USERNAME: "admin", CONF_PASSWORD: "test"},
         entry_id="entry-1",
         unique_id="serial_channel_0",
-        runtime_data=SimpleNamespace(host="camera.local", port=443),
+        runtime_data=SimpleNamespace(client=SimpleNamespace(host="camera.local", port=443)),
     )
     ring = event.VideolinkDoorbellRing(entry, SimpleNamespace())
     trigger = Mock()

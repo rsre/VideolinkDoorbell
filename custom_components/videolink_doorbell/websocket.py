@@ -53,7 +53,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "not_supported", "Entity is not a Videolink camera")
         return
     entry = hass.config_entries.async_get_entry(entity.config_entry_id)
-    client = entry.runtime_data if entry is not None else None
+    client = entry.runtime_data.client if entry is not None else None
     if not isinstance(client, VideolinkClient):
         connection.send_error(msg["id"], "not_ready", "Videolink camera is not ready")
         return

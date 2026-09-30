@@ -32,9 +32,10 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
+from .runtime import VideolinkRuntime
 from .websocket import async_register as async_register_websocket
 
-type VideolinkConfigEntry = ConfigEntry[VideolinkClient]
+type VideolinkConfigEntry = ConfigEntry[VideolinkRuntime]
 
 CARD_URL = "/videolink_doorbell/videolink-doorbell.js"
 LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
@@ -97,12 +98,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
         verify_ssl=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
     )
     try:
-        await client.ensure_login()
+        info = await client.device_info()
     except VideolinkAuthError as err:
         raise ConfigEntryAuthFailed from err
     except VideolinkConnectionError as err:
         raise ConfigEntryNotReady from err
-    entry.runtime_data = client
+    except VideolinkError as err:
+        raise ConfigEntryNotReady("Camera returned invalid device information") from err
+    entry.runtime_data = VideolinkRuntime(client, info)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -130,7 +133,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) 
 async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
     """Unload a config entry."""
     try:
-        await entry.runtime_data.native_talk_stop()
+        await entry.runtime_data.client.native_talk_stop()
     except (OSError, RuntimeError, ValueError, VideolinkError) as err:
         _LOGGER.warning("Native connection cleanup failed (%s)", type(err).__name__)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -23,6 +23,7 @@ from .const import (
     DOMAIN,
 )
 from .go2rtc import get_streams_api
+from .runtime import VideolinkRuntime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,12 +38,12 @@ def device_identifier(unique_id: str, channel: int) -> str:
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry[VideolinkClient],
+    entry: ConfigEntry[VideolinkRuntime],
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create the camera entity."""
-    client = entry.runtime_data
-    info = await client.device_info()
+    client = entry.runtime_data.client
+    info = entry.runtime_data.device_info
     camera = VideolinkWebCamera(entry, client, info)
     async_add_entities([camera])
     entry.async_on_unload(entry.add_update_listener(camera.async_config_entry_updated))
@@ -57,7 +58,7 @@ class VideolinkWebCamera(Camera):
 
     def __init__(
         self,
-        entry: ConfigEntry[VideolinkClient],
+        entry: ConfigEntry[VideolinkRuntime],
         client: VideolinkClient,
         info: DeviceInfo,
     ) -> None:
@@ -87,7 +88,7 @@ class VideolinkWebCamera(Camera):
         return await self._client.snapshot(self._channel)
 
     async def async_config_entry_updated(
-        self, _hass: HomeAssistant, entry: ConfigEntry[VideolinkClient]
+        self, _hass: HomeAssistant, entry: ConfigEntry[VideolinkRuntime]
     ) -> None:
         """Apply a live video-source change without recreating the entity."""
         video_source = entry.data.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
