@@ -2,6 +2,41 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.56] - 2026-10-01
+
+### Fixed
+
+- Recover browser native-talk sessions after Home Assistant WebSocket loss,
+  including loss before a subscription acknowledgement. Release microphone
+  capture and stale session tokens, and preserve ownership during card takeover.
+- Preserve valid audio-only WebRTC SDP and retain the RTSP backchannel when
+  camera orientation is configured.
+- Validate malformed CGI metadata, authentication tokens and token lifetimes;
+  recover expired credentials and refresh active stream sources after renewal.
+- Roll back forwarded platforms after setup failure or cancellation, bound
+  native startup/shutdown and frame reads, and clean up entry-owned resources.
+- Preserve camera identity during migrations, reconfiguration and
+  reauthentication; reject native commands for unloaded or disabled cameras.
+- Redact authenticated URLs from API errors and handle fragmented RTSP replies.
+
+### Added
+
+- Redacted standard Home Assistant diagnostics, a translated doorbell name and
+  wrong-device abort message, and `reolink_aio` integration debug logging.
+- Regression tests for interrupted native negotiation, CGI failures and
+  timeouts, resumed doorbell rings, migrations, platform rollback and camera
+  restart recovery. Chromium tests exercise the real HA WebSocket endpoint and
+  run in a dedicated CI job.
+- An independently buildable dashboard card distribution. This release bundles
+  card version `0.12.57` and also provides its standalone ZIP.
+
+### Changed
+
+- Centralize lifecycle, doorbell subscriptions, bounded native captures and
+  stream source ownership in config-entry runtime services.
+- Separate the HACS frontend installer from the device backend and extract an
+  independently buildable protocol client, retained in the HACS integration.
+
 ## [0.12.55] - 2026-09-28
 
 ### Added
