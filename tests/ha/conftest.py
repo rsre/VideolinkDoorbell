@@ -26,7 +26,9 @@ async def entry_runtime(hass, enable_custom_integrations, monkeypatch):
     client.port = 443
     client.base_url = "https://camera.local"
     client.device_info.return_value = DeviceInfo("Front", "Model", "serial", "FW")
-    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
+    client_factory = Mock(return_value=client)
+    client_factory._normalize_host = VideolinkClient._normalize_host
+    monkeypatch.setattr(backend, "VideolinkClient", client_factory)
     host = SimpleNamespace(
         get_host_data=AsyncMock(), logout=AsyncMock(), visitor_detected=Mock(return_value=False),
         baichuan=SimpleNamespace(events_active=True, register_callback=Mock(), unregister_callback=Mock(),
@@ -39,4 +41,3 @@ async def entry_runtime(hass, enable_custom_integrations, monkeypatch):
     )
     entry.add_to_hass(hass)
     return entry, client, host
-

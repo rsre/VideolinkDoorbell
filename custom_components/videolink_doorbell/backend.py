@@ -64,7 +64,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
-        await runtime.async_close()
+        # Forwarding may already have added entities before another platform
+        # fails or setup is cancelled. Roll those back before retrying setup.
+        try:
+            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        finally:
+            await runtime.async_close()
         raise
     return True
 
