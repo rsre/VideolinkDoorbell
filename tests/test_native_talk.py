@@ -17,6 +17,65 @@ import pytest
 CLIENT_PARENT = Path(__file__).parents[1] / "custom_components/videolink_doorbell"
 sys.path.insert(0, str(CLIENT_PARENT))
 from videolink_client import native_talk
+from videolink_client.api import VideolinkClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_stage", ["login", "talk_ability", "open_talk"])
+async def test_cancelled_negotiation_can_restart_and_send_audio(monkeypatch, cancel_stage):
+    entered = asyncio.Event()
+    transports = []
+
+    class Transport:
+        def __init__(self, *_args, **_kwargs):
+            self.closed = False
+            self.sent = []
+            transports.append(self)
+
+        async def stage(self, name):
+            if self is transports[0] and name == cancel_stage:
+                entered.set()
+                await asyncio.Event().wait()
+
+        async def login(self):
+            await self.stage("login")
+
+        async def talk_ability(self):
+            await self.stage("talk_ability")
+            return native_talk.TalkAbility()
+
+        async def open_talk(self, config):
+            await self.stage("open_talk")
+
+        async def send_pcm(self, pcm):
+            self.sent.append(pcm)
+
+        async def stop_talk(self):
+            pass
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", Transport)
+    client = VideolinkClient(object(), "camera.local", "user", "password")
+    startup = asyncio.create_task(client.native_talk_start(0, owner="cancelled-owner"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        startup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+        assert transports[0].closed
+        assert client._native_talk is client._native_talk_owner is None
+        config = await client.native_talk_start(0, owner="new-owner")
+        pcm = bytes(config.length_per_encoder * 2)
+        await client.native_talk_audio(pcm, owner="new-owner")
+        assert transports[1].sent == [pcm]
+        assert not transports[1].closed
+    finally:
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+        await client.native_talk_stop()
+    assert all(transport.closed for transport in transports)
 
 
 @pytest.mark.asyncio
