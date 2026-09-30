@@ -352,9 +352,12 @@ class VideolinkClient:
                 )
                 try:
                     await self._native_talk.start()
-                except Exception:
-                    await self._native_talk.stop()
-                    self._native_talk = None
+                except (Exception, asyncio.CancelledError):
+                    try:
+                        await self._native_talk.stop()
+                    finally:
+                        self._native_talk = None
+                        self._native_talk_owner = None
                     raise
             elif self._native_talk.failed:
                 await self._native_talk.restart()

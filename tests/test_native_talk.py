@@ -27,6 +27,34 @@ SPEC.loader.exec_module(native_talk)
 
 
 @pytest.mark.asyncio
+async def test_cancelled_start_closes_temporary_transport(monkeypatch):
+    entered = asyncio.Event()
+
+    class Transport:
+        closed = False
+
+        def __init__(self, *_args, **_kwargs):
+            self.__class__.instance = self
+
+        async def login(self):
+            entered.set()
+            await asyncio.Future()
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(native_talk, "NativeTalkSession", Transport)
+    channel = native_talk.NativeTalkChannel("camera", "user", "password")
+    task = asyncio.create_task(channel.start())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert Transport.instance.closed
+    assert channel.transport is None
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cancels_stalled_and_queued_frames(monkeypatch):
     entered = asyncio.Event()
 

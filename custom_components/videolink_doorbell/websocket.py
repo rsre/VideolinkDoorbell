@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import secrets
@@ -62,11 +63,28 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         action = msg["action"]
         if action == "start":
             token = secrets.token_urlsafe(24)
-            config = await client.native_talk_start(
-                entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
-                owner=token,
-                take_over=msg.get("claim", False),
-            )
+            disconnected = False
+
+            @callback
+            def close_session() -> None:
+                nonlocal disconnected
+                disconnected = True
+                hass.async_create_task(client.native_talk_stop(owner=token))
+
+            close_session.native_owner = token
+            connection.subscriptions[msg["id"]] = close_session
+            try:
+                config = await client.native_talk_start(
+                    entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
+                    owner=token,
+                    take_over=msg.get("claim", False),
+                )
+            except (Exception, asyncio.CancelledError):
+                connection.subscriptions.pop(msg["id"], None)
+                raise
+            if disconnected:
+                await client.native_talk_stop(owner=token)
+                return
             result = {
                 "ok": True,
                 "token": token,
@@ -95,9 +113,12 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             result = {"ok": True}
         elif action == "stop":
             await client.native_talk_stop(owner=token)
+            _remove_start_cleanup(connection, token)
             result = {"ok": True}
         elif action == "subscribe":
             subscription_id = msg["id"]
+            if any(getattr(unsub, "mix_owner", None) == token for unsub in connection.subscriptions.values()):
+                raise ValueError("native talk session is already subscribed")
             active = True
             if msg.get("dump_decrypted_header") and not msg.get("dump_raw"):
                 raise ValueError("decrypted headers require dump_raw")
@@ -149,6 +170,8 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 client._native_raw_captures.pop(token, None)
                 hass.async_create_task(client.native_talk_stop(owner=token))
 
+            _remove_start_cleanup(connection, token)
+            unsubscribe.mix_owner = token
             connection.subscriptions[subscription_id] = unsubscribe
             result = {"ok": True}
             if msg.get("dump_raw"):
@@ -199,6 +222,14 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "native_talk_failed", str(err))
         return
     connection.send_result(msg["id"], result)
+
+
+@callback
+def _remove_start_cleanup(connection, token: str) -> None:
+    """Transfer startup ownership to a mix subscription or explicit stop."""
+    for subscription_id, unsubscribe in list(connection.subscriptions.items()):
+        if getattr(unsubscribe, "native_owner", None) == token:
+            connection.subscriptions.pop(subscription_id)
 
 
 @callback

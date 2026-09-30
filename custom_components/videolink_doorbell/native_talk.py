@@ -1112,7 +1112,7 @@ class NativeTalkChannel:
                 self._audio_queue = asyncio.Queue(maxsize=self.AUDIO_QUEUE_MAXSIZE)
                 self._audio_error = None
                 self._audio_worker = asyncio.create_task(self._audio_worker_loop())
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 await transport.close()
                 raise
 

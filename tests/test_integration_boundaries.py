@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import sys
@@ -320,3 +321,36 @@ async def test_websocket_audio_requires_exact_negotiated_frame(boundaries, monke
     message["pcm"] = base64.b64encode(b"\x00" * 6).decode()
     await websocket.websocket_native_talk(hass, connection, message)
     assert connection.send_error.call_args.args[:2] == (9, "invalid_format")
+
+
+@pytest.mark.asyncio
+async def test_start_has_cleanup_before_subscribe(boundaries, monkeypatch):
+    websocket = _load(monkeypatch, "websocket")
+
+    class Client(boundaries.Client):
+        native_talk_stop = None
+
+        async def native_talk_start(self, *args, **kwargs):
+            assert connection.subscriptions
+            return SimpleNamespace(sample_rate=16000, length_per_encoder=1024, audio_stream_mode="speaker")
+
+    from unittest.mock import AsyncMock
+    client = Client()
+    client.native_talk_stop = AsyncMock()
+    monkeypatch.setattr(websocket, "VideolinkClient", Client)
+    boundaries.registry.async_get.return_value = SimpleNamespace(platform="videolink_doorbell", config_entry_id="entry")
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(client=client), data={})
+    tasks = []
+    hass = SimpleNamespace(
+        config_entries=SimpleNamespace(async_get_entry=lambda _: entry),
+        async_create_task=lambda coro: tasks.append(asyncio.create_task(coro)),
+    )
+    connection = SimpleNamespace(
+        user=SimpleNamespace(permissions=SimpleNamespace(check_entity=lambda *args: True)),
+        subscriptions={}, send_error=Mock(), send_result=Mock(),
+    )
+    await websocket.websocket_native_talk(hass, connection, {"id": 1, "entity_id": "camera.front", "action": "start"})
+    token = connection.send_result.call_args.args[1]["token"]
+    connection.subscriptions[1]()
+    await asyncio.gather(*tasks)
+    client.native_talk_stop.assert_awaited_once_with(owner=token)
