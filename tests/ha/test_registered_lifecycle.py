@@ -17,7 +17,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components import videolink_doorbell as integration
-from custom_components.videolink_doorbell import config_flow, event
+from custom_components.videolink_doorbell import config_flow, subscription
 from custom_components.videolink_doorbell.api import (
     DeviceInfo,
     VideolinkAuthError,
@@ -45,7 +45,7 @@ async def runtime(hass, enable_custom_integrations, monkeypatch):
         baichuan=SimpleNamespace(events_active=True, register_callback=Mock(), unregister_callback=Mock(),
                                 subscribe_events=AsyncMock(), check_subscribe_events=AsyncMock(), unsubscribe_events=AsyncMock()),
     )
-    monkeypatch.setattr(event, "Host", Mock(return_value=host))
+    monkeypatch.setattr(subscription, "Host", Mock(return_value=host))
     entry = MockConfigEntry(
         domain=DOMAIN, title="Front", version=4, unique_id="serial_channel_0",
         data={"host": "camera.local", "port": 443, "username": "admin", "password": "test", "verify_ssl": True},

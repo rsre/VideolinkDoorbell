@@ -6,13 +6,16 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
 
 from .api import DeviceInfo, VideolinkClient, VideolinkConnectionError
+
+if TYPE_CHECKING:
+    from .subscription import DoorbellSubscription
 
 _LOGGER = logging.getLogger(__name__)
 _CLEANUP_TIMEOUT = 10
@@ -31,8 +34,19 @@ class VideolinkRuntime:
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _starts: set[asyncio.Task] = field(default_factory=set, init=False)
     _cleanups: list[Callable[[], Awaitable[None]]] = field(default_factory=list, init=False)
+    _doorbell: DoorbellSubscription | None = field(default=None, init=False)
     _shutdown_task: asyncio.Task | None = field(default=None, init=False)
     _shutdown_unsub: Callable[[], None] | None = field(default=None, init=False)
+
+    @property
+    def doorbell(self) -> DoorbellSubscription:
+        """Lazily create the entry's subscription; connect only for consumers."""
+        if self._doorbell is None:
+            from .subscription import DoorbellSubscription
+
+            self._doorbell = DoorbellSubscription(self)
+            self.async_add_cleanup(self._doorbell.async_close)
+        return self._doorbell
 
     @callback
     def async_initialize(self) -> None:
@@ -52,7 +66,7 @@ class VideolinkRuntime:
         self._cleanups.append(cleanup)
 
     @callback
-    def async_create_task(self, coro: Coroutine[Any, Any, None], name: str) -> None:
+    def async_create_task(self, coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task | None:
         """Track connection cleanup work so unloading can settle it."""
         if self.closing:
             coro.close()
@@ -60,6 +74,7 @@ class VideolinkRuntime:
         task = self.entry.async_create_background_task(self.hass, coro, name)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def async_start_native(self, channel: int, **kwargs):
         """Cancel in-flight native acquisition when this entry closes."""

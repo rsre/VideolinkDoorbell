@@ -26,17 +26,10 @@ from .const import (
     DOMAIN,
 )
 from .go2rtc import async_oriented_video_source, get_streams_api
+from .helpers import device_identifier
 from .runtime import VideolinkRuntime
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def device_identifier(unique_id: str, channel: int) -> str:
-    """Return the stable physical-device ID from a channel config-entry ID."""
-    suffix = f"_channel_{channel}"
-    if not unique_id.endswith(suffix):
-        raise ValueError(f"Invalid Videolink config-entry unique ID: {unique_id}")
-    return unique_id[: -len(suffix)]
 
 
 async def async_setup_entry(

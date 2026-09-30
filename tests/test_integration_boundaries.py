@@ -177,7 +177,7 @@ def boundaries(monkeypatch: pytest.MonkeyPatch):
     )
     _module(
         monkeypatch,
-        f"{PACKAGE}.camera",
+        f"{PACKAGE}.helpers",
         device_identifier=lambda unique_id, channel: unique_id.removesuffix(
             f"_channel_{channel}"
         ),
@@ -192,32 +192,18 @@ def test_visitor_rising_edges_produce_rings(
 ) -> None:
     event = _load(monkeypatch, "event")
 
-    class Host:
-        pressed = False
-
-        def __init__(self, *args, **kwargs):
-            self.baichuan = SimpleNamespace()
-
-        def visitor_detected(self, channel):
-            assert channel == 0
-            return self.pressed
-
-    monkeypatch.setattr(event, "Host", Host)
-    entry = SimpleNamespace(
-        data={"username": "admin", "password": "test"},
-        entry_id="entry-1",
-        unique_id="serial_channel_0",
-        runtime_data=SimpleNamespace(client=SimpleNamespace(host="camera.local", port=443)),
-    )
-    ring = event.VideolinkDoorbellRing(entry, SimpleNamespace())
+    subscription = SimpleNamespace(available=False)
+    entry = SimpleNamespace(data={}, unique_id="serial_channel_0", runtime_data=SimpleNamespace(doorbell=subscription))
+    ring = event.VideolinkDoorbellRing(entry)
     trigger = Mock()
     monkeypatch.setattr(ring, "_trigger_event", trigger)
     monkeypatch.setattr(ring, "async_write_ha_state", Mock())
-    for pressed in (False, True, True, False, True):
-        ring._host.pressed = pressed
-        ring._handle_push()
+    subscription.available = True
+    for ring_event in (False, True, True):
+        ring._handle_event(ring_event)
     assert trigger.call_count == 2
     trigger.assert_any_call("ring")
+    assert ring.available
     assert ring.async_write_ha_state.call_count == 3
 
 
