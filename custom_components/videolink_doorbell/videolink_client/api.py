@@ -74,7 +74,6 @@ class VideolinkClient:
         self._native_talk: NativeTalkChannel | None = None
         self._native_talk_lock = asyncio.Lock()
         self._native_talk_owner: str | None = None
-        self._native_raw_captures: dict[str, tuple] = {}
 
     @staticmethod
     def _normalize_host(host: str) -> str:
@@ -353,7 +352,6 @@ class VideolinkClient:
                 except Exception:
                     _LOGGER.debug("Unable to stop the previous native talk session", exc_info=True)
                 finally:
-                    self._native_raw_captures.pop(self._native_talk_owner, None)
                     self._native_talk = None
                     self._native_talk_owner = None
             if self._native_talk is None:
@@ -471,6 +469,5 @@ class VideolinkClient:
                 try:
                     await session.stop()
                 finally:
-                    self._native_raw_captures.pop(self._native_talk_owner, None)
                     self._native_talk = None
                     self._native_talk_owner = None

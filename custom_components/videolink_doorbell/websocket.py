@@ -7,7 +7,6 @@ import base64
 import binascii
 import secrets
 import time
-from datetime import datetime, timezone
 
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL
@@ -21,7 +20,6 @@ from .api import VideolinkAuthError, VideolinkClient
 from .const import CONF_CHANNEL, DEFAULT_CHANNEL, DOMAIN
 
 COMMAND = "videolink_doorbell/native_talk"
-RAW_CAPTURE_MAX_BYTES = 16 * 1024 * 1024
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -138,9 +136,6 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             active = True
             if msg.get("dump_decrypted_header") and not msg.get("dump_raw"):
                 raise ValueError("decrypted headers require dump_raw")
-            raw_frames: list[tuple] = []
-            raw_bytes = 0
-            raw_dropped = 0
 
             def on_mix_frame(frame) -> None:
                 if not active:
@@ -159,31 +154,12 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
 
             await client.native_talk_set_mix_callback(on_mix_frame, owner=token)
             if msg.get("dump_raw"):
-                def on_raw_frame(header, extension: bytes, payload: bytes) -> None:
-                    nonlocal raw_bytes, raw_dropped
-                    if not active:
-                        return
-                    decrypted_prefix = None
-                    if msg.get("dump_decrypted_header") and header.message_id == 202 and payload:
-                        try:
-                            decrypted_prefix = client.native_talk_decrypt_wire_prefix(
-                                payload, owner=token
-                            )
-                        except Exception:  # noqa: BLE001 - optional capture may fail independently
-                            decrypted_prefix = None
-                    size = len(extension) + len(payload) + 64 + len(decrypted_prefix or b"")
-                    if raw_bytes + size > RAW_CAPTURE_MAX_BYTES:
-                        raw_dropped += 1
-                        return
-                    raw_frames.append((time.time_ns(), header, extension, payload, decrypted_prefix))
-                    raw_bytes += size
-
-                client.native_talk_set_raw_callback(on_raw_frame, owner=token)
+                runtime.enable_raw_capture(token, decrypted_headers=msg.get("dump_decrypted_header", False))
 
             def unsubscribe() -> None:
                 nonlocal active
                 active = False
-                client._native_raw_captures.pop(token, None)
+                runtime.discard_capture(token)
                 runtime.async_create_task(
                     runtime.async_stop_native(owner=token), "Videolink native connection cleanup"
                 )
@@ -192,47 +168,10 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             unsubscribe.mix_owner = token
             connection.subscriptions[subscription_id] = unsubscribe
             result = {"ok": True}
-            if msg.get("dump_raw"):
-                # Capture stays on the HA side during timing-critical trials.
-                # Fetch and encode only after the last trial, before stop.
-                client._native_raw_captures[token] = (
-                    raw_frames, lambda: raw_dropped
-                )
         elif action == "diagnostics":
             result = client.native_talk_mix_diagnostics(owner=token)
         elif action == "raw_fetch":
-            client.native_talk_mix_diagnostics(owner=token)
-            capture = client._native_raw_captures.get(token)
-            if capture is None:
-                raise ValueError("raw capture was not enabled for this session")
-            frames, dropped = capture
-            cursor = msg["cursor"]
-            chunk = frames[cursor : cursor + 32]
-            result = {
-                "frames": [
-                    {
-                        "received_at_utc": datetime.fromtimestamp(
-                            received_ns / 1_000_000_000, timezone.utc
-                        ).isoformat(),
-                        "message_id": header.message_id,
-                        "response_code": header.response_code,
-                        "message_class": header.message_class,
-                        "channel_id": header.channel_id,
-                        "stream_type": header.stream_type,
-                        "message_number": header.message_number,
-                        "body_length": header.body_length,
-                        "payload_offset": header.payload_offset,
-                        "extension_b64": base64.b64encode(extension).decode(),
-                        "payload_b64": base64.b64encode(payload).decode(),
-                        **({"decrypted_payload_prefix_b64": base64.b64encode(decrypted_prefix).decode()}
-                           if decrypted_prefix is not None else {}),
-                    }
-                    for received_ns, header, extension, payload, decrypted_prefix in chunk
-                ],
-                "next_cursor": cursor + len(chunk),
-                "done": cursor + len(chunk) >= len(frames),
-                "dropped": dropped(),
-            }
+            result = runtime.capture_chunk(token, msg["cursor"])
     except VideolinkAuthError:
         entry.async_start_reauth(hass)
         connection.send_error(msg["id"], "invalid_auth", "Camera authentication rejected")

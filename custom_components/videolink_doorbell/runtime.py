@@ -13,6 +13,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
 
 from .api import DeviceInfo, VideolinkClient, VideolinkConnectionError
+from .capture import NativeCaptureStore
 
 if TYPE_CHECKING:
     from .subscription import DoorbellSubscription
@@ -34,6 +35,7 @@ class VideolinkRuntime:
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _starts: set[asyncio.Task] = field(default_factory=set, init=False)
     _cleanups: list[Callable[[], Awaitable[None]]] = field(default_factory=list, init=False)
+    _captures: NativeCaptureStore = field(default_factory=NativeCaptureStore, init=False)
     _doorbell: DoorbellSubscription | None = field(default=None, init=False)
     _shutdown_task: asyncio.Task | None = field(default=None, init=False)
     _shutdown_unsub: Callable[[], None] | None = field(default=None, init=False)
@@ -84,13 +86,51 @@ class VideolinkRuntime:
         assert task is not None
         self._starts.add(task)
         try:
-            return await self.client.native_talk_start(channel, **kwargs)
+            config = await self.client.native_talk_start(channel, **kwargs)
+            if owner := kwargs.get("owner"):
+                self._captures.retain(owner)
+            return config
         finally:
             self._starts.discard(task)
 
     async def async_stop_native(self, *, owner: str | None = None) -> None:
         """Release a native session through the entry's lifecycle boundary."""
-        await self.client.native_talk_stop(owner=owner)
+        try:
+            await self.client.native_talk_stop(owner=owner)
+        finally:
+            if owner is None:
+                self._captures.clear()
+            else:
+                self._captures.discard(owner)
+
+    @callback
+    def enable_raw_capture(self, owner: str, *, decrypted_headers: bool = False) -> None:
+        """Keep opted-in capture on the HA side of the protocol client boundary."""
+        if self.closing:
+            raise VideolinkConnectionError("Videolink entry is unloading")
+        self.client.native_talk_mix_diagnostics(owner=owner)
+
+        def on_frame(header, extension: bytes, payload: bytes) -> None:
+            prefix = None
+            if decrypted_headers and header.message_id == 202 and payload:
+                try:
+                    prefix = self.client.native_talk_decrypt_wire_prefix(payload, owner=owner)
+                except Exception:  # noqa: BLE001 - optional diagnostics cannot break audio
+                    prefix = None
+            self._captures.record(owner, header, extension, payload, prefix)
+
+        self.client.native_talk_set_raw_callback(on_frame, owner=owner)
+        self._captures.start(owner)
+
+    @callback
+    def discard_capture(self, owner: str) -> None:
+        self._captures.discard(owner)
+
+    @callback
+    def capture_chunk(self, owner: str, cursor: int) -> dict:
+        """Authorize reads against the device client's current session owner."""
+        self.client.native_talk_mix_diagnostics(owner=owner)
+        return self._captures.chunk(owner, cursor)
 
     async def async_close(self) -> None:
         """Idempotently close resources, even if an unload caller is cancelled."""
@@ -102,6 +142,7 @@ class VideolinkRuntime:
         await asyncio.shield(self._shutdown_task)
 
     async def _async_close_resources(self) -> None:
+        self._captures.clear()
         if self._shutdown_unsub is not None:
             self._shutdown_unsub()
             self._shutdown_unsub = None
