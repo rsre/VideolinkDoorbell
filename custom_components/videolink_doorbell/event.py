@@ -32,7 +32,7 @@ class VideolinkDoorbellRing(EventEntity):
     """Expose transport health and rings without managing device connections."""
 
     _attr_has_entity_name = True
-    _attr_name = "Doorbell"
+    _attr_translation_key = "doorbell"
     _attr_should_poll = False
     _attr_device_class = EventDeviceClass.DOORBELL
     _attr_event_types: ClassVar[list[str]] = [DoorbellEventType.RING]

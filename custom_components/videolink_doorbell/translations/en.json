@@ -66,6 +66,13 @@
       }
     }
   },
+  "entity": {
+    "event": {
+      "doorbell": {
+        "name": "Doorbell"
+      }
+    }
+  },
   "selector": {
     "stream": {
       "options": {

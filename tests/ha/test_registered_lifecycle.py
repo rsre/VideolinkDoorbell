@@ -75,6 +75,34 @@ async def test_repeated_setup_reload_and_unload_preserves_entities(hass, runtime
     assert host.logout.await_count == client.native_talk_stop.await_count == 3
 
 
+async def test_doorbell_name_comes_from_platform_translation(hass, runtime, monkeypatch):
+    from homeassistant.helpers import translation
+
+    entry, _, _ = runtime
+    get_translations = translation.async_get_translations
+
+    async def translated_name(*args, **kwargs):
+        translations = await get_translations(*args, **kwargs)
+        key = "component.videolink_doorbell.entity.event.doorbell.name"
+        if args[2] == "entity" and DOMAIN in args[3]:
+            assert translations[key] == "Doorbell"
+            translations = {
+                **translations,
+                key: "Translated doorbell",
+            }
+        return translations
+
+    monkeypatch.setattr(translation, "async_get_translations", translated_name)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    doorbell = next(entity for entity in entities if entity.domain == "event")
+    assert doorbell.translation_key == "doorbell"
+    assert doorbell.original_name == "Translated doorbell"
+    assert hass.states.get(doorbell.entity_id).attributes["friendly_name"] == "Front Translated doorbell"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_metadata_connection_failure_recovers_without_partial_entities(hass, runtime, freezer):
     entry, client, _ = runtime
     client.device_info.side_effect = VideolinkConnectionError("Offline")
