@@ -36,8 +36,8 @@ All notable changes are documented here. This project follows Semantic Versionin
   stream source ownership in config-entry runtime services.
 - Separate the HACS frontend installer from the device backend and extract an
   independently buildable protocol client, retained in the HACS integration.
-- Align the Reolink event client with Home Assistant's `reolink-aio==0.21.17`
-  dependency to pass current Hassfest validation.
+- Allow `reolink-aio>=0.21.15` to follow Home Assistant's shared dependency
+  instead of forcing an exact version. Verify compatibility with 0.21.17.
 
 ## [0.12.55] - 2026-09-28
 
