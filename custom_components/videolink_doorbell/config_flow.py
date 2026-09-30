@@ -35,6 +35,10 @@ from .const import (
 )
 
 
+class MissingIdentityError(VideolinkError):
+    """The device did not provide a stable identity."""
+
+
 class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle setup through the Home Assistant UI."""
 
@@ -116,21 +120,41 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _unique_id(info: DeviceInfo, user_input: dict[str, Any]) -> str:
         """Build the stable per-channel config-entry unique ID."""
-        normalized = VideolinkClient._normalize_host(user_input[CONF_HOST])
-        device_id = info.serial or f"{normalized}:{user_input[CONF_PORT]}"
+        if not info.serial:
+            raise MissingIdentityError("Camera did not provide a serial number")
+        device_id = info.serial
         return f"{device_id}_channel_{user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)}"
 
-    def _connection_is_configured(self, user_input: dict[str, Any]) -> bool:
+    def _connection_is_configured(
+        self, user_input: dict[str, Any], *, exclude_entry_id: str | None = None
+    ) -> bool:
         """Detect an existing entry before a changing API serial can bypass it."""
         host = VideolinkClient._normalize_host(user_input[CONF_HOST])
         port = user_input[CONF_PORT]
         channel = user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         return any(
-            VideolinkClient._normalize_host(other.data[CONF_HOST]) == host
+            other.entry_id != exclude_entry_id
+            and VideolinkClient._normalize_host(other.data[CONF_HOST]) == host
             and other.data[CONF_PORT] == port
             and other.data.get(CONF_CHANNEL, DEFAULT_CHANNEL) == channel
             for other in self.hass.config_entries.async_entries(DOMAIN)
         )
+
+    async def _async_check_identity(self, entry, info: DeviceInfo, updated: dict[str, Any]) -> None:
+        """Keep registry identity stable, including existing address-based entries."""
+        old_host = VideolinkClient._normalize_host(entry.data[CONF_HOST])
+        legacy_id = f"{old_host}:{entry.data[CONF_PORT]}_channel_{entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)}"
+        if entry.unique_id == legacy_id:
+            if any(
+                updated.get(key, DEFAULT_CHANNEL if key == CONF_CHANNEL else None)
+                != entry.data.get(key, DEFAULT_CHANNEL if key == CONF_CHANNEL else None)
+                for key in (CONF_PORT, CONF_CHANNEL)
+            ) or VideolinkClient._normalize_host(updated[CONF_HOST]) != old_host:
+                raise data_entry_flow.AbortFlow("wrong_device")
+            # Old entries lack a hardware identity; retain their existing registry IDs.
+            return
+        await self.async_set_unique_id(self._unique_id(info, updated))
+        self._abort_if_unique_id_mismatch(reason="wrong_device")
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -142,6 +166,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input = {**user_input, CONF_CHANNEL: DEFAULT_CHANNEL}
             try:
                 info = await self._async_validate(user_input)
+                unique_id = self._unique_id(info, user_input)
+            except MissingIdentityError:
+                errors["base"] = "missing_identity"
             except VideolinkAuthError:
                 errors["base"] = "invalid_auth"
             except VideolinkConnectionError:
@@ -149,7 +176,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except VideolinkError:
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(self._unique_id(info, user_input))
+                await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
                 if self._connection_is_configured(user_input):
                     return self.async_abort(reason="already_configured")
@@ -182,6 +209,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_abort(reason="reconfigure_successful")
             try:
                 info = await self._async_validate(updated)
+                await self._async_check_identity(entry, info, updated)
+            except MissingIdentityError:
+                errors["base"] = "missing_identity"
             except VideolinkAuthError:
                 errors["base"] = "invalid_auth"
             except VideolinkConnectionError:
@@ -189,17 +219,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except VideolinkError:
                 errors["base"] = "unknown"
             else:
-                unique_id = self._unique_id(info, updated)
-                if any(
-                    other.entry_id != entry.entry_id and other.unique_id == unique_id
-                    for other in self.hass.config_entries.async_entries(DOMAIN)
-                ):
+                if self._connection_is_configured(updated, exclude_entry_id=entry.entry_id):
                     return self.async_abort(reason="already_configured")
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    unique_id=unique_id,
-                    title=info.name,
-                )
+                self.hass.config_entries.async_update_entry(entry, title=info.name)
                 return self.async_update_reload_and_abort(
                     entry,
                     data_updates=updated,
@@ -224,6 +246,9 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             updated = {**entry.data, **user_input}
             try:
                 info = await self._async_validate(updated)
+                await self._async_check_identity(entry, info, updated)
+            except MissingIdentityError:
+                errors["base"] = "missing_identity"
             except VideolinkAuthError:
                 errors["base"] = "invalid_auth"
             except VideolinkConnectionError:
@@ -231,8 +256,6 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except VideolinkError:
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(self._unique_id(info, updated))
-                self._abort_if_unique_id_mismatch()
                 return self.async_update_reload_and_abort(
                     entry, data_updates=user_input
                 )

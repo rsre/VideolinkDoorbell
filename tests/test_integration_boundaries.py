@@ -252,7 +252,7 @@ async def test_reconfigure_video_source_updates_without_relogin(
 def test_duplicate_connection_is_detected_when_serial_changes(boundaries, monkeypatch):
     config_flow = _load(monkeypatch, "config_flow")
     flow = config_flow.VideolinkWebConfigFlow()
-    other = SimpleNamespace(data={"host": "camera.local", "port": 443, "channel": 0})
+    other = SimpleNamespace(entry_id="other", data={"host": "camera.local", "port": 443, "channel": 0})
     flow.hass = SimpleNamespace(
         config_entries=SimpleNamespace(async_entries=lambda domain: [other])
     )
