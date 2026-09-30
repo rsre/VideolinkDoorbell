@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo as HADeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
 
-from .api import DeviceInfo, VideolinkClient
+from .api import DeviceInfo, VideolinkClient, VideolinkError
 from .const import (
     CONF_CHANNEL,
     CONF_RTSP_PORT,
@@ -64,6 +66,8 @@ class VideolinkWebCamera(Camera):
     ) -> None:
         super().__init__()
         self._client = client
+        self._entry = entry
+        self._last_video_url: str | None = None
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         self._stream = entry.data.get(CONF_STREAM, DEFAULT_STREAM)
         self._video_source = entry.data.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
@@ -87,6 +91,37 @@ class VideolinkWebCamera(Camera):
         """Return the current console snapshot."""
         return await self._client.snapshot(self._channel)
 
+    async def async_added_to_hass(self) -> None:
+        """Keep cached tokenized sources current while this entity exists."""
+        await super().async_added_to_hass()
+        self.async_on_remove(async_track_time_interval(
+            self.hass, self._async_refresh_active_source, timedelta(seconds=30)
+        ))
+
+    async def _async_refresh_active_source(self, _now=None) -> None:
+        """Renew active FLV URLs without polling disabled or unused cameras."""
+        if self._video_source != "flv" or self._last_video_url is None:
+            return
+        try:
+            await self._async_refresh_stream_source()
+        except VideolinkError:
+            _LOGGER.debug("Camera source refresh failed; retrying at the next interval")
+
+    async def _async_video_url(self) -> str:
+        if self._video_source == "rtsp":
+            return self._client.rtsp_url(self._channel, self._stream, self._rtsp_port)
+        return await self._client.flv_url(self._channel, self._stream)
+
+    async def _async_refresh_stream_source(self) -> str:
+        """Update both cached HLS and WebRTC sources when the URL changes."""
+        video_url = await self._async_video_url()
+        if self.stream is not None and self.stream.source != video_url:
+            self.stream.update_source(video_url)
+        if video_url != self._last_video_url:
+            await self._async_register_go2rtc_sources(video_url)
+            self._last_video_url = video_url
+        return video_url
+
     async def async_config_entry_updated(
         self, _hass: HomeAssistant, entry: ConfigEntry[VideolinkRuntime]
     ) -> None:
@@ -96,26 +131,18 @@ class VideolinkWebCamera(Camera):
             return
         self._video_source = video_source
         try:
-            if video_source == "rtsp":
-                video_url = self._client.rtsp_url(
-                    self._channel, self._stream, self._rtsp_port
-                )
-            else:
-                video_url = await self._client.flv_url(self._channel, self._stream)
-            await self._async_register_go2rtc_sources(video_url)
-        except Exception:
-            _LOGGER.exception("Unable to refresh the camera video source")
+            await self._async_refresh_stream_source()
+        except VideolinkError:
+            _LOGGER.warning("Unable to refresh the camera video source; retrying")
         self.async_write_ha_state()
 
     async def stream_source(self) -> str:
         """Return the configured video source and register talkback in go2rtc."""
-        if self._video_source == "rtsp":
-            video_url = self._client.rtsp_url(
-                self._channel, self._stream, self._rtsp_port
-            )
-        else:
-            video_url = await self._client.flv_url(self._channel, self._stream)
-        await self._async_register_go2rtc_sources(video_url)
+        previous_url = self._last_video_url
+        video_url = await self._async_refresh_stream_source()
+        # A provider restart may have removed an unchanged registration.
+        if video_url == previous_url:
+            await self._async_register_go2rtc_sources(video_url)
         return video_url
 
     async def _async_register_go2rtc_sources(self, video_url: str) -> None:
