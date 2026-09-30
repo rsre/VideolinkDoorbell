@@ -7,13 +7,15 @@ from unittest.mock import Mock
 
 import pytest
 
-pytest.importorskip("homeassistant")
-pytest.importorskip("reolink_aio")
+try:
+    pytest.importorskip("homeassistant")
+    pytest.importorskip("reolink_aio")
+    from homeassistant.components.event import DoorbellEventType
+    from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
-from homeassistant.components.event import DoorbellEventType
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-
-from custom_components.videolink_doorbell import event
+    from custom_components.videolink_doorbell import event
+except (ImportError, AttributeError) as err:
+    pytest.skip(f"Home Assistant test dependencies are unavailable: {err}", allow_module_level=True)
 
 
 def test_visitor_rising_edges_produce_rings(monkeypatch: pytest.MonkeyPatch) -> None:

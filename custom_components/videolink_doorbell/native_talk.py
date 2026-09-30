@@ -1,31 +1,30 @@
-"""Baichuan native-talk codec and framing primitives.
+"""Baichuan native-talk codec, framing, and session handling.
 
-The Baichuan session and message serializer are intentionally separate from
-this module.  The codec behavior follows the public Neolink/bairelay talk
-implementation: 16-bit mono PCM is encoded as DVI-4 (IMA) ADPCM in small,
-paced blocks before being placed in a Baichuan media message.
+The codec behavior follows the public Neolink/bairelay talk implementation:
+16-bit mono PCM is encoded as DVI-4 (IMA) ADPCM in small, paced blocks before
+being placed in a Baichuan media message.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import asyncio
 import hashlib
+import logging
 import re
 import struct
 import time
-from typing import Callable, Iterable
+from collections.abc import Callable
+from dataclasses import dataclass
+from itertools import pairwise
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
+_LOGGER = logging.getLogger(__name__)
 
 NATIVE_TALK_PORT = 9000
 SAMPLE_RATE = 16_000
-CHANNELS = 1
 SAMPLES_PER_FRAME = 1_024
 FRAME_DURATION_MS = 64
-OBSERVED_HEADER_SIZE = 24
-OBSERVED_FRAME_SIZE = 683
 BC_MAGIC = 0x0ABCDEF0
 BC_CLASS_MODERN_24 = 0x6414
 MSG_ID_TALK_CONFIG = 201
@@ -56,14 +55,6 @@ _IMA_STEP_TABLE = (
     18500, 20350, 22385, 24623, 27086, 29794, 32767,
 )
 
-# The first native talk frame captured from the official client.  This is kept
-# only as a parser fixture; the actual Baichuan message envelope is still a
-# separate layer and must not be assumed from this media prefix alone.
-_OBSERVED_HEADER = bytes.fromhex(
-    "f0debc0aca00000093020000000000000000146483000000"
-)
-
-
 def _ima_encode_nibble(sample: int, predictor: int, index: int) -> tuple[int, int, int]:
     step = _IMA_STEP_TABLE[index]
     difference = sample - predictor
@@ -90,39 +81,6 @@ def _ima_encode_nibble(sample: int, predictor: int, index: int) -> tuple[int, in
     return nibble, predictor, index
 
 
-def encode_dvi4_block(samples: Iterable[int], *, byte_order: str = "<") -> bytes:
-    """Encode one mono DVI-4/IMA ADPCM block.
-
-    DVI-4 stores the initial 16-bit predictor, an index, and a reserved byte,
-    followed by two 4-bit samples per byte.  The first sample is represented
-    by the predictor, so a block containing ``N`` PCM samples contains
-    ``4 + ceil((N - 1) / 2)`` bytes.
-    """
-    pcm = tuple(max(-32768, min(32767, int(sample))) for sample in samples)
-    if not pcm:
-        raise ValueError("DVI-4 block requires at least one sample")
-    if byte_order not in ("<", ">"):
-        raise ValueError("byte_order must be '<' or '>'")
-    predictor = pcm[0]
-    index = 0
-    encoded = bytearray(struct.pack(f"{byte_order}hBB", predictor, index, 0))
-    for offset in range(1, len(pcm), 2):
-        high, predictor, index = _ima_encode_nibble(pcm[offset], predictor, index)
-        low = 0
-        if offset + 1 < len(pcm):
-            low, predictor, index = _ima_encode_nibble(pcm[offset + 1], predictor, index)
-        encoded.append((high << 4) | low)
-    return bytes(encoded)
-
-
-def encode_dvi4_pcm16le(pcm: bytes, *, byte_order: str = "<") -> bytes:
-    """Encode signed 16-bit little-endian mono PCM as one DVI-4 block."""
-    if len(pcm) % 2:
-        raise ValueError("PCM16 data must contain complete samples")
-    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
-    return encode_dvi4_block(samples, byte_order=byte_order)
-
-
 class Dvi4Encoder:
     """Stateful IMA/DVI-4 encoder used by the camera talk stream."""
 
@@ -147,36 +105,6 @@ class Dvi4Encoder:
             )
             encoded.append((first << 4) | second)
         return bytes(encoded)
-
-
-@dataclass(frozen=True, slots=True)
-class NativeTalkFrame:
-    """One captured native-media frame used for parser fixtures."""
-
-    payload: bytes
-
-    def encode(self) -> bytes:
-        """Return the observed media prefix around an encoded payload."""
-        if not self.payload:
-            raise ValueError("native talk payload must not be empty")
-        header = bytearray(_OBSERVED_HEADER)
-        struct.pack_into("<I", header, 8, len(self.payload))
-        return bytes(header) + self.payload
-
-
-def split_native_talk_frame(data: bytes) -> NativeTalkFrame:
-    """Validate and split one complete captured media frame."""
-    if len(data) < OBSERVED_HEADER_SIZE:
-        raise ValueError("native talk frame is shorter than its header")
-    if data[:8] != _OBSERVED_HEADER[:8]:
-        raise ValueError("unexpected native talk frame marker")
-    payload_length = struct.unpack_from("<I", data, 8)[0]
-    expected = OBSERVED_HEADER_SIZE + payload_length
-    if len(data) != expected:
-        raise ValueError(
-            f"native talk frame length mismatch: got {len(data)}, expected {expected}"
-        )
-    return NativeTalkFrame(data[OBSERVED_HEADER_SIZE:])
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,28 +174,8 @@ def _plausible_pcm16(data: bytes) -> bool:
     energy = sum(sample * sample for sample in samples)
     if energy < len(samples) * 64 * 64:
         return True
-    difference_energy = sum((current - previous) ** 2 for previous, current in zip(samples, samples[1:]))
+    difference_energy = sum((current - previous) ** 2 for previous, current in pairwise(samples))
     return difference_energy * 2 < energy * 3
-
-
-class NativeTalkPacketizer:
-    """Turn one 64 ms PCM frame into encoded audio.
-
-    ``encode_frame`` is injected so the Baichuan message layer can later use
-    the negotiated TalkAbility framing without coupling it to this codec.
-    """
-
-    def __init__(self, encode_frame: Callable[[bytes], bytes]) -> None:
-        self._encode_frame = encode_frame
-
-    def packetize(self, pcm_frame: bytes) -> bytes:
-        """Encode one 1024-sample mono PCM frame."""
-        if len(pcm_frame) != SAMPLES_PER_FRAME * 2:
-            raise ValueError("expected 1024 signed 16-bit mono samples")
-        payload = self._encode_frame(pcm_frame)
-        if not isinstance(payload, bytes):
-            raise TypeError("native talk encoder must return bytes")
-        return NativeTalkFrame(payload).encode()
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,15 +234,6 @@ class TalkAbility:
             length_per_encoder=self.length_per_encoder,
             sound_track=self.sound_track,
         )
-
-
-def serialize_adpcm_media(data: bytes) -> bytes:
-    """Serialize one Baichuan ADPCM media block, including 8-byte padding."""
-    if len(data) < 4:
-        raise ValueError("ADPCM data must include its 4-byte predictor header")
-    if (len(data) - 4) % 2:
-        raise ValueError("ADPCM block payload must have an even byte count")
-    return serialize_adpcm_media_with_field(data, field_value=0)
 
 
 def serialize_adpcm_media_with_field(data: bytes, *, field_value: int) -> bytes:
@@ -424,10 +323,10 @@ def serialize_talk_ability_message(
 ) -> bytes:
     """Build the official app's MSG 10 talk-ability request."""
     extension = b"".join((
-        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n',
         b'<Extension version="1.1">\n',
         f'<channelId>{channel_id}</channelId>\n'.encode(),
-        b'<chnType>0</chnType>\n'
+        b'<chnType>0</chnType>\n',
         b'</Extension>\n',
     ))
     if encrypt_xml is not None:
@@ -452,8 +351,8 @@ def serialize_talk_audio_message(
     # Match the official app's TinyXML output byte-for-byte. The line breaks,
     # declaration space, and element order account for its 131-byte extension.
     extension = b"".join((
-        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
-        b'<Extension version="1.1">\n'
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n',
+        b'<Extension version="1.1">\n',
         b'<binaryData>1</binaryData>\n',
         f'<channelId>{channel_id}</channelId>\n'.encode(),
         b'</Extension>\n',
@@ -872,7 +771,7 @@ class NativeTalkSession:
                 header, extension, payload = await self.client.receive()
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - wake waiters after transport failure
                 self._mix_reader_error = f"{type(err).__name__}: {err}"
                 if self._response_queue.full():
                     self._response_queue.get_nowait()
@@ -885,8 +784,7 @@ class NativeTalkSession:
                 try:
                     self.raw_frame_callback(header, extension, payload)
                 except Exception:
-                    # Optional diagnostics must not interrupt the talk receiver.
-                    pass
+                    _LOGGER.debug("Native raw-frame observer failed", exc_info=True)
             if header.message_id == MSG_ID_TALK:
                 if not payload:
                     # Audio write acknowledgements are not control responses.
@@ -900,7 +798,7 @@ class NativeTalkSession:
                         if b"0\x31wb" in decoded[:80] or decoded.startswith(b"01dcH264"):
                             self._mix_payload_media_magic_frames += 1
                         frame = parse_wire_mix_frame(decoded)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - reject corrupt encrypted frames
                         # A bad frame must not interrupt control responses or audio send.
                         self._mix_rejected_frames += 1
                 now = time.monotonic()
@@ -932,7 +830,7 @@ class NativeTalkSession:
                     try:
                         self.mix_frame_callback(frame)
                         self._mix_forwarded_frames += 1
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - user callback must not stop receiver
                         self._mix_rejected_frames += 1
                         self._trace(f"mix callback failed: {type(err).__name__}: {err}")
                 continue
@@ -1224,7 +1122,7 @@ class NativeTalkChannel:
                     await self.transport.send_pcm(pcm16le)
                 if not completion.done():
                     completion.set_result(None)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - fail all queued frames on worker error
                 self._audio_error = err
                 if not completion.done():
                     completion.set_exception(err)
@@ -1277,7 +1175,7 @@ class NativeTalkChannel:
             except Exception:
                 # A broken socket may reject the reset command; close and
                 # discard it anyway before opening the replacement session.
-                pass
+                _LOGGER.debug("Unable to reset failed native talk session", exc_info=True)
         await self.start()
 
     def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:

@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+import logging
 import math
 import secrets
-import ssl
 import struct
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
+
+_LOGGER = logging.getLogger(__name__)
 
 try:
     from .native_talk import NativeTalkChannel
@@ -123,9 +125,9 @@ class VideolinkClient:
         return f"https://{self.url_host}{suffix}"
 
     @property
-    def ssl_context(self) -> ssl.SSLContext | bool:
+    def ssl_context(self) -> bool:
         """Return aiohttp TLS verification configuration."""
-        return True if self.verify_ssl else False
+        return bool(self.verify_ssl)
 
     async def _request(
         self, commands: list[dict[str, Any]], token: str | None = None
@@ -334,8 +336,7 @@ class VideolinkClient:
                     if previous is not None:
                         await previous.stop()
                 except Exception:
-                    # A broken old channel must not prevent a new owner from trying.
-                    pass
+                    _LOGGER.debug("Unable to stop the previous native talk session", exc_info=True)
                 finally:
                     self._native_raw_captures.pop(self._native_talk_owner, None)
                     self._native_talk = None
@@ -358,11 +359,6 @@ class VideolinkClient:
                 await self._native_talk.restart()
             self._native_talk_owner = owner
             return self._native_talk.talk_config
-
-    @property
-    def native_talk_config(self):
-        """Return the currently negotiated native talk configuration."""
-        return self._native_talk.talk_config if self._native_talk is not None else None
 
     async def native_talk_audio(self, pcm16le: bytes, *, wait: bool = True, owner: str | None = None) -> None:
         """Encode and send exactly one negotiated PCM talk frame."""

@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import math
-from pathlib import Path
 import random
 import struct
 import sys
+from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
+import native_talk_legacy_fixture as legacy
 import pytest
-
 
 MODULE_PATH = (
     Path(__file__).parents[1]
@@ -166,9 +167,9 @@ async def test_mix_wire_probe_only_reports_recognized_decryption(monkeypatch) ->
 
 def test_observed_frame_round_trips() -> None:
     payload = bytes(range(128))
-    encoded = native_talk.NativeTalkFrame(payload).encode()
-    assert len(encoded) == native_talk.OBSERVED_HEADER_SIZE + len(payload)
-    assert native_talk.split_native_talk_frame(encoded).payload == payload
+    encoded = legacy.NativeTalkFrame(payload).encode()
+    assert len(encoded) == legacy.OBSERVED_HEADER_SIZE + len(payload)
+    assert legacy.split_native_talk_frame(encoded).payload == payload
 
 
 def test_sdk_mix_parser_rejects_wire_transport_body() -> None:
@@ -272,25 +273,12 @@ async def test_mix_reader_rejects_random_data_even_with_valid_container() -> Non
     assert frames == []
 
 
-def test_packetizer_requires_one_native_frame() -> None:
-    packetizer = native_talk.NativeTalkPacketizer(lambda pcm: b"encoded")
-    packet = packetizer.packetize(bytes(native_talk.SAMPLES_PER_FRAME * 2))
-    assert native_talk.split_native_talk_frame(packet).payload == b"encoded"
-
+def test_legacy_packetizer_requires_one_native_frame() -> None:
+    packetizer = legacy.NativeTalkPacketizer(lambda pcm: b"encoded")
+    packet = packetizer.packetize(bytes(legacy.SAMPLES_PER_FRAME * 2))
+    assert legacy.split_native_talk_frame(packet).payload == b"encoded"
     with pytest.raises(ValueError):
         packetizer.packetize(b"short")
-
-
-def test_dvi4_encoder_has_expected_block_shape() -> None:
-    pcm = b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in range(1024))
-    encoded = native_talk.encode_dvi4_pcm16le(pcm)
-    assert len(encoded) == 4 + (1023 + 1) // 2
-    assert encoded[:2] == b"\x00\x00"
-
-
-def test_dvi4_encoder_rejects_invalid_pcm() -> None:
-    with pytest.raises(ValueError):
-        native_talk.encode_dvi4_pcm16le(b"\x00")
 
 
 def test_stateful_dvi4_encoder_carries_predictor_between_blocks() -> None:
@@ -317,7 +305,9 @@ def test_stateful_dvi4_block_header_matches_encoder_state() -> None:
 
 
 def test_adpcm_media_has_baichuan_header_and_alignment() -> None:
-    media = native_talk.serialize_adpcm_media(b"\x00\x00\x00\x00" + b"\x55" * 508)
+    media = native_talk.serialize_adpcm_media_with_field(
+        b"\x00\x00\x00\x00" + b"\x55" * 508, field_value=0
+    )
     assert media[:4] == b"0\x31wb"
     assert media[-4:] == b"\x00" * 4
     assert int.from_bytes(media[4:6], "little") == 516
@@ -574,19 +564,18 @@ def test_wire_prefix_decryption_is_bounded() -> None:
         session.decrypt_wire_prefix(encrypted, limit=65)
 
 
-def test_parser_rejects_control_or_truncated_data() -> None:
+def test_legacy_parser_rejects_control_or_truncated_data() -> None:
     with pytest.raises(ValueError, match="shorter"):
-        native_talk.split_native_talk_frame(b"not audio")
-
-    frame = native_talk.NativeTalkFrame(b"payload").encode()
+        legacy.split_native_talk_frame(b"not audio")
+    frame = legacy.NativeTalkFrame(b"payload").encode()
     with pytest.raises(ValueError, match="length mismatch"):
-        native_talk.split_native_talk_frame(frame[:-1])
+        legacy.split_native_talk_frame(frame[:-1])
 
 
 @pytest.mark.asyncio
 async def test_native_talk_channel_owns_session_lifecycle(monkeypatch) -> None:
     class FakeTransport:
-        instances = []
+        instances: ClassVar[list] = []
 
         def __init__(self, *args, **kwargs):
             self.mix_frame_callback = kwargs.get("mix_frame_callback")
