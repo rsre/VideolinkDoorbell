@@ -7,8 +7,10 @@ import pytest
 
 pytest.importorskip("pytest_homeassistant_custom_component")
 
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import translation
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -76,8 +78,6 @@ async def test_repeated_setup_reload_and_unload_preserves_entities(hass, runtime
 
 
 async def test_doorbell_name_comes_from_platform_translation(hass, runtime, monkeypatch):
-    from homeassistant.helpers import translation
-
     entry, _, _ = runtime
     get_translations = translation.async_get_translations
 
@@ -101,6 +101,30 @@ async def test_doorbell_name_comes_from_platform_translation(hass, runtime, monk
     assert doorbell.original_name == "Translated doorbell"
     assert hass.states.get(doorbell.entity_id).attributes["friendly_name"] == "Front Translated doorbell"
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_reauth_rejects_different_camera_with_translated_abort(hass, runtime, monkeypatch):
+    entry, client, _ = runtime
+    original_data = dict(entry.data)
+    client.device_info.return_value = DeviceInfo("Other", "Model", "other_serial", "FW")
+    factory = Mock(return_value=client)
+    factory._normalize_host = VideolinkClient._normalize_host
+    monkeypatch.setattr(config_flow, "VideolinkClient", factory)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_REAUTH, "entry_id": entry.entry_id}, data=entry.data,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "admin", "password": "replacement"},
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_device"
+    translations = await translation.async_get_translations(hass, "en", "config", {DOMAIN})
+    assert translations[f"component.{DOMAIN}.config.abort.wrong_device"] == (
+        "The connected camera does not match the configured device. Add it as a new integration."
+    )
+    assert entry.data == original_data
+    assert entry.unique_id == "serial_channel_0"
+    assert entry.state is ConfigEntryState.NOT_LOADED
 
 
 async def test_metadata_connection_failure_recovers_without_partial_entities(hass, runtime, freezer):
