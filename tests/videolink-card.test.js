@@ -12,7 +12,7 @@ global.customElements = { get: () => undefined, define: () => undefined };
 global.window = { customCards: [] };
 
 const source = fs.readFileSync(
-  "custom_components/videolink_doorbell/frontend/videolink-doorbell.js",
+  "frontend/videolink-doorbell.js",
   "utf8",
 );
 vm.runInThisContext(`${source}\nglobal.CardUnderTest = VideolinkDoorbellCard;`);

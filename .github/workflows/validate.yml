@@ -55,6 +55,8 @@ jobs:
         run: ruff check .
       - name: Run frontend tests
         run: node --test tests/videolink-card.test.js
+      - name: Validate HACS bundle and build standalone card
+        run: python tools/build_frontend.py --check-bundle --output-dir frontend/dist
 
   home-assistant-tests:
     name: Home Assistant lifecycle tests

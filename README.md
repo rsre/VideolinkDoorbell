@@ -66,6 +66,9 @@ entity: camera.your_videolink_camera
 
 Home Assistant must be used over HTTPS (or localhost) because browsers block microphone capture on insecure origins.
 
+The card also has an independent [source and distribution](frontend/README.md)
+for backend installations that omit automatic card installation.
+
 ### Settings
 
 - `title` to set a custom title on the card. If omitted, the camera entity name
@@ -301,9 +304,13 @@ dashboard fallback.
 For a Core submission, use `backend.py` as the integration's `__init__.py` and
 exclude `hacs_frontend.py` and the `frontend/` assets. Remove `frontend` and
 `lovelace` from the Core manifest dependencies; those dependencies belong to
-the HACS wrapper. Distribute the JavaScript card separately as a dashboard
-resource, and let users install it through HACS or their dashboard resource
-settings. The backend's WebSocket commands remain available to that card.
+the HACS wrapper. The independent source lives in the repository's top-level
+`frontend/` directory; the integration's asset is a vendored HACS copy checked
+by CI. Build the separate JavaScript distribution with
+`python tools/build_frontend.py`; its ZIP contains no backend Python files.
+Users of a backend that omits the bundle install the separate card through
+dashboard resource settings. The backend's WebSocket commands remain
+available to that card.
 The current manifest describes the HACS distribution; this separation does
 not replace the pending public protocol-client dependency or the remaining
 Core compatibility work.
