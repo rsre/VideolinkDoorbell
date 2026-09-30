@@ -271,7 +271,8 @@ node --test tests/videolink-card.test.js
 
 Home Assistant tests use a separate Python 3.14.2 or later environment. The
 fixture package pins Home Assistant 2026.9.1; the extra dependencies match its
-camera, stream and go2rtc manifests.
+camera, stream and go2rtc manifests. The Reolink client matches this integration's
+manifest and current Home Assistant's dependency pin.
 
 ```sh
 python3.14 -m venv .venv-ha
