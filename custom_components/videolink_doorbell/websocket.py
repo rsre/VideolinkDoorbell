@@ -67,6 +67,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         entry is None
         or entry.state is not ConfigEntryState.LOADED
         or not isinstance(client, VideolinkClient)
+        or runtime.closing
         or hass.states.get(msg["entity_id"]) is None
     ):
         connection.send_error(msg["id"], "not_ready", "Videolink camera is not ready")
@@ -82,12 +83,14 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             def close_session() -> None:
                 nonlocal disconnected
                 disconnected = True
-                hass.async_create_task(client.native_talk_stop(owner=token))
+                runtime.async_create_task(
+                    runtime.async_stop_native(owner=token), "Videolink native connection cleanup"
+                )
 
             close_session.native_owner = token
             connection.subscriptions[msg["id"]] = close_session
             try:
-                config = await client.native_talk_start(
+                config = await runtime.async_start_native(
                     entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
                     owner=token,
                     take_over=msg.get("claim", False),
@@ -96,7 +99,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 connection.subscriptions.pop(msg["id"], None)
                 raise
             if disconnected:
-                await client.native_talk_stop(owner=token)
+                await runtime.async_stop_native(owner=token)
                 return
             result = {
                 "ok": True,
@@ -111,7 +114,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 raise ValueError("native talk token is required")
         if action == "audio":
             received_at = time.monotonic()
-            config = await client.native_talk_start(
+            config = await runtime.async_start_native(
                 entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL),
                 owner=token,
                 require_owner=True,
@@ -125,7 +128,7 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
             )
             result = {"ok": True}
         elif action == "stop":
-            await client.native_talk_stop(owner=token)
+            await runtime.async_stop_native(owner=token)
             _remove_start_cleanup(connection, token)
             result = {"ok": True}
         elif action == "subscribe":
@@ -181,7 +184,9 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 nonlocal active
                 active = False
                 client._native_raw_captures.pop(token, None)
-                hass.async_create_task(client.native_talk_stop(owner=token))
+                runtime.async_create_task(
+                    runtime.async_stop_native(owner=token), "Videolink native connection cleanup"
+                )
 
             _remove_start_cleanup(connection, token)
             unsubscribe.mix_owner = token

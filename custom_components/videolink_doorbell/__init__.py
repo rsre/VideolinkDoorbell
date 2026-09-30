@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
@@ -42,7 +41,6 @@ LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
 CARD_PATH = Path(__file__).parent / "frontend" / "videolink-doorbell.js"
 CARD_VERSION = "0.12.55"
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -105,8 +103,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
         raise ConfigEntryNotReady from err
     except VideolinkError as err:
         raise ConfigEntryNotReady("Camera returned invalid device information") from err
-    entry.runtime_data = VideolinkRuntime(client, info)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    runtime = entry.runtime_data = VideolinkRuntime(client, info, hass, entry)
+    runtime.async_initialize()
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        await runtime.async_close()
+        raise
     return True
 
 
@@ -132,8 +135,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) 
 
 async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
     """Unload a config entry."""
-    try:
-        await entry.runtime_data.client.native_talk_stop()
-    except (OSError, RuntimeError, ValueError, VideolinkError) as err:
-        _LOGGER.warning("Native connection cleanup failed (%s)", type(err).__name__)
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    await entry.runtime_data.async_close()
+    return True

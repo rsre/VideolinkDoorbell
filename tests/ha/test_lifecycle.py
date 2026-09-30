@@ -19,6 +19,7 @@ from custom_components.videolink_doorbell.api import (
     VideolinkConnectionError,
     VideolinkError,
 )
+from custom_components.videolink_doorbell.runtime import VideolinkRuntime
 
 
 def make_entry():
@@ -33,7 +34,9 @@ def make_entry():
 @pytest.mark.asyncio
 async def test_unload_continues_after_native_device_error():
     entry = make_entry()
-    entry.runtime_data = SimpleNamespace(client=SimpleNamespace(native_talk_stop=AsyncMock(side_effect=TimeoutError)))
+    entry.runtime_data = VideolinkRuntime(
+        SimpleNamespace(native_talk_stop=AsyncMock(side_effect=TimeoutError)), None, None, entry
+    )
     unload = AsyncMock(return_value=True)
     hass = SimpleNamespace(config_entries=SimpleNamespace(async_unload_platforms=unload))
     assert await async_unload_entry(hass, entry)
@@ -51,7 +54,8 @@ async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error,
     monkeypatch.setattr(integration, "VideolinkClient", Mock(return_value=client))
     monkeypatch.setattr(integration, "async_get_clientsession", Mock())
     forward = AsyncMock()
-    hass = SimpleNamespace(config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+    hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
+                           config_entries=SimpleNamespace(async_forward_entry_setups=forward))
     entry = make_entry()
     with pytest.raises(expected):
         await integration.async_setup_entry(hass, entry)
@@ -69,5 +73,6 @@ async def test_setup_stores_metadata_before_forwarding(monkeypatch):
     async def forward(actual_entry, platforms):
         assert actual_entry.runtime_data.client is client
         assert actual_entry.runtime_data.device_info is info
-    hass = SimpleNamespace(config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+    hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
+                           config_entries=SimpleNamespace(async_forward_entry_setups=forward))
     assert await integration.async_setup_entry(hass, entry)

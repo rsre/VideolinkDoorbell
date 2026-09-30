@@ -299,7 +299,8 @@ async def test_websocket_audio_requires_exact_negotiated_frame(boundaries, monke
     boundaries.registry.async_get.return_value = SimpleNamespace(
         domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry-1"
     )
-    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client), data={"channel": 0})
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client, closing=False, async_start_native=client.native_talk_start,
+        async_stop_native=client.native_talk_stop if hasattr(client, "native_talk_stop") else None), data={"channel": 0})
     hass = SimpleNamespace(
         states=SimpleNamespace(get=lambda _: object()),
         config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry)
@@ -345,8 +346,10 @@ async def test_start_has_cleanup_before_subscribe(boundaries, monkeypatch):
     client.native_talk_stop = AsyncMock()
     monkeypatch.setattr(websocket, "VideolinkClient", Client)
     boundaries.registry.async_get.return_value = SimpleNamespace(domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry")
-    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client), data={})
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=client, closing=False, async_start_native=client.native_talk_start,
+        async_stop_native=client.native_talk_stop if hasattr(client, "native_talk_stop") else None), data={})
     tasks = []
+    entry.runtime_data.async_create_task = lambda coro, name: tasks.append(asyncio.create_task(coro))
     hass = SimpleNamespace(
         states=SimpleNamespace(get=lambda _: object()),
         config_entries=SimpleNamespace(async_get_entry=lambda _: entry),
@@ -373,7 +376,7 @@ async def test_websocket_rejects_unready_or_non_camera_entities(boundaries, monk
     websocket = _load(monkeypatch, "websocket")
     entity = SimpleNamespace(domain="camera", disabled_by=None, platform="videolink_doorbell", config_entry_id="entry")
     boundaries.registry.async_get.return_value = entity
-    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=boundaries.Client()))
+    entry = SimpleNamespace(state="loaded", runtime_data=SimpleNamespace(client=boundaries.Client(), closing=False))
     if case == "missing_runtime":
         del entry.runtime_data
     elif case == "unloaded":
