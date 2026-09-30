@@ -42,6 +42,18 @@ class VideolinkRuntime:
     _shutdown_task: asyncio.Task | None = field(default=None, init=False)
     _shutdown_unsub: Callable[[], None] | None = field(default=None, init=False)
 
+    @callback
+    def diagnostics(self) -> dict[str, Any]:
+        """Return cached health only, without creating lazy services or exposing I/O."""
+        return {
+            "closing": self.closing,
+            "closed": self.closed,
+            "background_tasks": sum(not task.done() for task in self._tasks),
+            "native_start_operations": len(self._starts),
+            "doorbell": self._doorbell.diagnostics() if self._doorbell is not None else None,
+            "streams": self._streams.diagnostics() if self._streams is not None else None,
+        }
+
     @property
     def streams(self) -> VideolinkStreams:
         if self._streams is None:

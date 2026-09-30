@@ -51,6 +51,16 @@ class VideolinkStreams:
         self._url: str | None = None
         self._set_config(runtime.entry.data)
 
+    @callback
+    def diagnostics(self) -> dict[str, bool]:
+        """Expose cached stream health without authenticated source URLs."""
+        return {
+            "camera_attached": self._camera is not None,
+            "source_resolved": self._url is not None,
+            "provider_refresh_pending": self._provider_dirty,
+            "refresh_running": self._refresh_task is not None and not self._refresh_task.done(),
+        }
+
     def _set_config(self, data) -> None:
         self._channel = data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         self._stream = data.get(CONF_STREAM, DEFAULT_STREAM)

@@ -51,6 +51,15 @@ class DoorbellSubscription:
         """Whether the event transport is currently receiving device updates."""
         return self._available
 
+    @callback
+    def diagnostics(self) -> dict[str, bool | int]:
+        """Expose transport health without device identity or connection details."""
+        return {
+            "available": self._available,
+            "subscribers": len(self._listeners),
+            "listener_running": self._task is not None and not self._task.done(),
+        }
+
     async def async_subscribe(self, listener: Callable[[bool], None]) -> None:
         """Start on the first consumer; disabled entities open no transport."""
         async with self._lock:

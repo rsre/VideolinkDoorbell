@@ -323,3 +323,12 @@ alone registers the video and RTSP backchannel producers. Home Assistant
 path still reads Core's private go2rtc client. Source renewal on newer versions
 uses a guarded provider refresh hook because Core has no public source-change
 notification API; that boundary is isolated in `go2rtc.py` and covered by tests.
+
+## Diagnostics
+
+Home Assistant's integration diagnostics download reports known connection
+settings, model/firmware and cached runtime/subscription/stream health. It
+redacts the host, credentials, camera name and serial number. Tokens,
+authenticated URLs, raw captures and audio are excluded. Downloads make no
+device requests and do not start disabled entities' lazy services; they also
+work before successful setup and after unload.
