@@ -11,8 +11,7 @@ pytest.importorskip("reolink_aio")
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
-from custom_components import videolink_doorbell as integration
-from custom_components.videolink_doorbell import async_unload_entry
+from custom_components.videolink_doorbell import async_unload_entry, backend
 from custom_components.videolink_doorbell.api import (
     DeviceInfo,
     VideolinkAuthError,
@@ -51,14 +50,14 @@ async def test_unload_continues_after_native_device_error():
 ])
 async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error, expected):
     client = SimpleNamespace(device_info=AsyncMock(side_effect=error))
-    monkeypatch.setattr(integration, "VideolinkClient", Mock(return_value=client))
-    monkeypatch.setattr(integration, "async_get_clientsession", Mock())
+    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
+    monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     forward = AsyncMock()
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
                            config_entries=SimpleNamespace(async_forward_entry_setups=forward))
     entry = make_entry()
     with pytest.raises(expected):
-        await integration.async_setup_entry(hass, entry)
+        await backend.async_setup_entry(hass, entry)
     forward.assert_not_awaited()
     assert not hasattr(entry, "runtime_data")
 
@@ -67,12 +66,12 @@ async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error,
 async def test_setup_stores_metadata_before_forwarding(monkeypatch):
     info = DeviceInfo("Front", "Model", "serial", "Firmware")
     client = SimpleNamespace(device_info=AsyncMock(return_value=info))
-    monkeypatch.setattr(integration, "VideolinkClient", Mock(return_value=client))
-    monkeypatch.setattr(integration, "async_get_clientsession", Mock())
+    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
+    monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     entry = make_entry()
     async def forward(actual_entry, platforms):
         assert actual_entry.runtime_data.client is client
         assert actual_entry.runtime_data.device_info is info
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
                            config_entries=SimpleNamespace(async_forward_entry_setups=forward))
-    assert await integration.async_setup_entry(hass, entry)
+    assert await backend.async_setup_entry(hass, entry)

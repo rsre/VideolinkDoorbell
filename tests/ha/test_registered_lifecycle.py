@@ -19,7 +19,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components import videolink_doorbell as integration
-from custom_components.videolink_doorbell import config_flow, subscription
+from custom_components.videolink_doorbell import backend, config_flow, subscription
 from custom_components.videolink_doorbell.api import (
     DeviceInfo,
     VideolinkAuthError,
@@ -35,13 +35,13 @@ async def runtime(hass, enable_custom_integrations, monkeypatch):
     # Frontend/go2rtc services are separate integrations; preserve actual platform
     # forwarding, registries, entry states and entity teardown in these tests.
     monkeypatch.setattr(loaded, "dependencies", [])
-    monkeypatch.setattr(integration, "async_setup", AsyncMock(return_value=True))
+    monkeypatch.setattr(integration, "async_setup_frontend", AsyncMock())
     client = AsyncMock(spec=VideolinkClient)
     client.host = "camera.local"
     client.port = 443
     client.base_url = "https://camera.local"
     client.device_info.return_value = DeviceInfo("Front", "Model", "serial", "FW")
-    monkeypatch.setattr(integration, "VideolinkClient", Mock(return_value=client))
+    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     host = SimpleNamespace(
         get_host_data=AsyncMock(), logout=AsyncMock(), visitor_detected=Mock(return_value=False),
         baichuan=SimpleNamespace(events_active=True, register_callback=Mock(), unregister_callback=Mock(),

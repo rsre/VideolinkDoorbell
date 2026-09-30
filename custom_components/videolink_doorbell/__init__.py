@@ -1,142 +1,19 @@
-"""Videolink Doorbell integration."""
+"""HACS entry point composing the backend and bundled dashboard card installer."""
 
-from __future__ import annotations
-
-from pathlib import Path
-
-from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.lovelace.const import LOVELACE_DATA
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigEntryAuthFailed,
-    ConfigEntryNotReady,
-)
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import (
-    VideolinkAuthError,
-    VideolinkClient,
-    VideolinkConnectionError,
-    VideolinkError,
-)
-from .const import (
-    CONF_CHANNEL,
-    CONF_VERIFY_SSL,
-    DEFAULT_CHANNEL,
-    DEFAULT_VERIFY_SSL,
-    DOMAIN,
-    PLATFORMS,
-)
-from .runtime import VideolinkRuntime
-from .websocket import async_register as async_register_websocket
-
-type VideolinkConfigEntry = ConfigEntry[VideolinkRuntime]
-
-CARD_URL = "/videolink_doorbell/videolink-doorbell.js"
-LEGACY_CARD_URL = "/videolink_doorbell/videolink-doorbell-camera-card.js"
-CARD_PATH = Path(__file__).parent / "frontend" / "videolink-doorbell.js"
-CARD_VERSION = "0.12.55"
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+from .backend import CONFIG_SCHEMA as CONFIG_SCHEMA
+from .backend import VideolinkConfigEntry as VideolinkConfigEntry
+from .backend import async_migrate_entry as async_migrate_entry
+from .backend import async_setup as async_setup_backend
+from .backend import async_setup_entry as async_setup_entry
+from .backend import async_unload_entry as async_unload_entry
+from .hacs_frontend import async_setup as async_setup_frontend
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register the bundled Lovelace card once when the integration loads."""
-    async_register_websocket(hass)
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(CARD_PATH), True)]
-    )
-    await _async_register_card(hass)
-    return True
-
-
-async def _async_register_card(hass: HomeAssistant) -> None:
-    """Persist the card resource, with an extra-module fallback for YAML."""
-    versioned_url = f"{CARD_URL}?v={CARD_VERSION}"
-    lovelace = hass.data.get(LOVELACE_DATA)
-    resources = getattr(lovelace, "resources", None)
-    if resources is None:
-        add_extra_js_url(hass, versioned_url)
-        return
-
-    try:
-        await resources.async_get_info()
-        existing = next(
-            (
-                item
-                for item in resources.async_items()
-                if item.get("url", "").split("?", 1)[0]
-                in {CARD_URL, LEGACY_CARD_URL}
-            ),
-            None,
-        )
-        resource = {"res_type": "module", "url": versioned_url}
-        if existing is None:
-            await resources.async_create_item(resource)
-        elif (
-            existing.get("url") != versioned_url
-            or existing.get("type", existing.get("res_type")) != "module"
-        ):
-            await resources.async_update_item(existing["id"], resource)
-    except (AttributeError, KeyError, TypeError, ValueError):
-        add_extra_js_url(hass, versioned_url)
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
-    """Set up Videolink Doorbell from a config entry."""
-    client = VideolinkClient(
-        async_get_clientsession(hass),
-        entry.data[CONF_HOST],
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
-        port=entry.data[CONF_PORT],
-        verify_ssl=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-    )
-    try:
-        info = await client.device_info()
-    except VideolinkAuthError as err:
-        raise ConfigEntryAuthFailed from err
-    except VideolinkConnectionError as err:
-        raise ConfigEntryNotReady from err
-    except VideolinkError as err:
-        raise ConfigEntryNotReady("Camera returned invalid device information") from err
-    runtime = entry.runtime_data = VideolinkRuntime(client, info, hass, entry)
-    runtime.async_initialize()
-    entry.async_on_unload(entry.add_update_listener(runtime.async_config_entry_updated))
-    try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except BaseException:
-        await runtime.async_close()
-        raise
-    return True
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
-    """Migrate legacy config-entry identities and device titles."""
-    updates: dict[str, object] = {}
-    if entry.version == 1:
-        channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
-        unique_id = entry.unique_id
-        if unique_id is not None and not unique_id.endswith(f"_channel_{channel}"):
-            updates["unique_id"] = f"{unique_id}_channel_{channel}"
-    if entry.version < 4:
-        host = VideolinkClient._normalize_host(entry.data[CONF_HOST])
-        suffix = f" ({host})"
-        title = updates.get("title", entry.title)
-        if isinstance(title, str) and title.endswith(suffix):
-            updates["title"] = title[: -len(suffix)]
-        updates["version"] = 4
-    if updates:
-        hass.config_entries.async_update_entry(entry, **updates)
-    return True
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
-    """Unload a config entry."""
-    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    """Set up the backend and automatic card installation for HACS users."""
+    if not await async_setup_backend(hass, config):
         return False
-    await entry.runtime_data.async_close()
+    await async_setup_frontend(hass)
     return True

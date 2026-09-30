@@ -289,6 +289,25 @@ imports no Home Assistant modules. HACS uses the bundled copy. Publishing the
 package and pinning the published dependency remain prerequisites for a future
 Core submission.
 
+## Dashboard packaging and Core scope
+
+The HACS entry point (`__init__.py`) composes two independent setup hooks:
+`backend.py` owns device setup, migration, unload and native-talk WebSocket
+commands; `hacs_frontend.py` owns static card serving and Lovelace resource
+installation/migration. The backend never invokes the card installer. HACS
+continues to bundle and automatically install the card, including its YAML
+dashboard fallback.
+
+For a Core submission, use `backend.py` as the integration's `__init__.py` and
+exclude `hacs_frontend.py` and the `frontend/` assets. Remove `frontend` and
+`lovelace` from the Core manifest dependencies; those dependencies belong to
+the HACS wrapper. Distribute the JavaScript card separately as a dashboard
+resource, and let users install it through HACS or their dashboard resource
+settings. The backend's WebSocket commands remain available to that card.
+The current manifest describes the HACS distribution; this separation does
+not replace the pending public protocol-client dependency or the remaining
+Core compatibility work.
+
 ## Runtime ownership
 
 Each config entry owns a lifecycle manager, a lazy doorbell subscription,
