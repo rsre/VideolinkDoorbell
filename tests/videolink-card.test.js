@@ -21,6 +21,15 @@ test("new cards default to scaled video", () => {
   assert.equal(CardUnderTest.getStubConfig(undefined, ["camera.front_door"]).video_fit, "contain");
 });
 
+test("audio-only packetization preserves valid SDP line termination", () => {
+  const card = new CardUnderTest();
+  const offer = { type: "offer", sdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=recvonly\r\n" };
+  const result = card._setLowLatencyAudioPacketization(offer);
+  assert.equal(result.type, "offer");
+  assert.equal(result.sdp, "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=recvonly\r\na=ptime:20\r\na=maxptime:20\r\n");
+  assert.equal(card._setLowLatencyAudioPacketization(result).sdp, result.sdp);
+});
+
 test("new cards prefill the title from the camera entity", () => {
   const config = CardUnderTest.getStubConfig(
     { states: { "camera.front_door": { attributes: { friendly_name: "Front Door" } } } },

@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.55";
+const CARD_VERSION = "0.12.56";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -621,7 +621,9 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _setLowLatencyAudioPacketization(offer) {
     if (!offer?.sdp) return offer;
-    const lines = offer.sdp.split("\r\n");
+    // SDP ends in CRLF. Insert attributes before that terminator, especially
+    // when audio is the final (or only) media section.
+    const lines = offer.sdp.trimEnd().split(/\r?\n/);
     const audioIndex = lines.findIndex((line) => line.startsWith("m=audio "));
     if (audioIndex < 0) return offer;
     const nextMediaIndex = lines.findIndex(
@@ -640,7 +642,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (!updatedAudioLines.some((line) => line.startsWith("a=maxptime:"))) {
       lines.splice(updatedAudioEnd, 0, "a=maxptime:20");
     }
-    return { ...offer, sdp: lines.join("\r\n") };
+    return { ...offer, sdp: `${lines.join("\r\n")}\r\n` };
   }
 
   _setAudioPlayoutDelay(transceiver) {
