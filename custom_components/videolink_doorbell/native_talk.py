@@ -760,10 +760,6 @@ class NativeTalkSession:
             self._mix_reader_error = None
             self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
 
-    async def configure_talk(self, config: TalkConfig) -> None:
-        """Compatibility alias for the SDK-equivalent talk opener."""
-        await self.open_talk(config)
-
     async def _read_mix_frames(self) -> None:
         """Drain unsolicited mix frames and preserve control responses."""
         while True:

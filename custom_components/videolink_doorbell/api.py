@@ -124,11 +124,6 @@ class VideolinkClient:
         suffix = "" if self.port == 443 else f":{self.port}"
         return f"https://{self.url_host}{suffix}"
 
-    @property
-    def ssl_context(self) -> bool:
-        """Return aiohttp TLS verification configuration."""
-        return bool(self.verify_ssl)
-
     async def _request(
         self, commands: list[dict[str, Any]], token: str | None = None
     ) -> list[dict[str, Any]]:
@@ -141,7 +136,7 @@ class VideolinkClient:
                 f"{self.base_url}/cgi-bin/api.cgi",
                 params=params,
                 json=commands,
-                ssl=self.ssl_context,
+                ssl=self.verify_ssl,
                 timeout=self._TIMEOUT,
             ) as response:
                 response.raise_for_status()
@@ -260,7 +255,7 @@ class VideolinkClient:
                 async with self._session.get(
                     f"{self.base_url}/cgi-bin/api.cgi",
                     params=params,
-                    ssl=self.ssl_context,
+                    ssl=self.verify_ssl,
                     timeout=self._TIMEOUT,
                 ) as response:
                     response.raise_for_status()
@@ -409,13 +404,8 @@ class VideolinkClient:
             await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
             await channel.send_pcm(pcm)
             deadline += frame_size / config.sample_rate
-        # Native playback is buffered in the camera. Keep the session alive
-        # after the final frame so the caller cannot stop it before the queued
-        # audio has reached the speaker.
-        await asyncio.sleep(2.0)
-        # The final TCP write can complete before the doorbell has played its
-        # queued audio. Match the CLI probe's drain before the card stops talk.
-        await asyncio.sleep(1.0)
+        # Keep talk open while the camera plays its buffered audio.
+        await asyncio.sleep(3.0)
 
     async def native_talk_set_mix_callback(self, callback, *, owner: str | None = None) -> None:
         """Set the consumer for validated native mix audio."""

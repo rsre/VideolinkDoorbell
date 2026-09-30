@@ -43,14 +43,13 @@ TONE_SECONDS = 2.0
 OBSERVE_SECONDS = 5.0
 PTT_SECONDS = 5.0
 
-GO2RTC_BASE_URL = GO2RTC_URL
 GO2RTC_SESSION = requests.Session()
 GO2RTC_SESSION.auth = HTTPBasicAuth(GO2RTC_USERNAME, GO2RTC_PASSWORD)
 
 
 def get_stream() -> dict:
     response = GO2RTC_SESSION.get(
-        f"{GO2RTC_BASE_URL}/api/streams", timeout=10
+        f"{GO2RTC_URL}/api/streams", timeout=10
     )
     response.raise_for_status()
     streams = response.json()
@@ -71,7 +70,7 @@ def play() -> None:
         "#input=file"
     )
     response = GO2RTC_SESSION.post(
-        f"{GO2RTC_BASE_URL}/api/streams",
+        f"{GO2RTC_URL}/api/streams",
         params={"dst": GO2RTC_STREAM, "src": source},
         timeout=20,
     )
@@ -80,7 +79,7 @@ def play() -> None:
 
 def stop() -> None:
     response = GO2RTC_SESSION.post(
-        f"{GO2RTC_BASE_URL}/api/streams",
+        f"{GO2RTC_URL}/api/streams",
         params={"dst": GO2RTC_STREAM, "src": ""},
         timeout=10,
     )
