@@ -1,0 +1,1276 @@
+"""Baichuan native-talk codec, framing, and session handling.
+
+The codec behavior follows the public Neolink/bairelay talk implementation:
+16-bit mono PCM is encoded as DVI-4 (IMA) ADPCM in small, paced blocks before
+being placed in a Baichuan media message.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+import struct
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from itertools import pairwise
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape
+
+_LOGGER = logging.getLogger(__name__)
+
+NATIVE_TALK_PORT = 9000
+CONNECT_TIMEOUT_SECONDS = 10
+WRITE_TIMEOUT_SECONDS = 5
+CLOSE_TIMEOUT_SECONDS = 2
+MAX_NATIVE_BODY_BYTES = 1024 * 1024
+FRAME_READ_TIMEOUT_SECONDS = 10
+SAMPLE_RATE = 16_000
+SAMPLES_PER_FRAME = 1_024
+FRAME_DURATION_MS = 64
+BC_MAGIC = 0x0ABCDEF0
+BC_CLASS_MODERN_24 = 0x6414
+MSG_ID_TALK_CONFIG = 201
+MSG_ID_TALK = 202
+MSG_ID_TALK_STOP = 11
+MSG_ID_TALK_ABILITY = 10
+BCMEDIA_ADPCM_MAGIC = 0x62773130
+BCMEDIA_ADPCM_DATA_MAGIC = 0x0100
+BCMEDIA_APP_HEADER_FIELD = 2  # Observed constant; its meaning is not verified.
+XML_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
+
+
+class NativeTalkAuthError(PermissionError):
+    """The camera rejected native login credentials."""
+
+
+def _xml_child_text(node: ElementTree.Element, name: str, default: str) -> str:
+    """Read a child value while tolerating namespace-qualified XML."""
+    for child in node.iter():
+        if child is not node and child.tag.rsplit("}", 1)[-1] == name and child.text:
+            return child.text
+    return default
+
+_IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8) * 2
+_IMA_STEP_TABLE = (
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
+    34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143,
+    157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544,
+    598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878,
+    2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894,
+    6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818,
+    18500, 20350, 22385, 24623, 27086, 29794, 32767,
+)
+
+def _ima_encode_nibble(sample: int, predictor: int, index: int) -> tuple[int, int, int]:
+    step = _IMA_STEP_TABLE[index]
+    difference = sample - predictor
+    nibble = 0
+    if difference < 0:
+        nibble = 8
+        difference = -difference
+    estimate = step >> 3
+    if difference >= step:
+        nibble |= 4
+        difference -= step
+        estimate += step
+    if difference >= step >> 1:
+        nibble |= 2
+        difference -= step >> 1
+        estimate += step >> 1
+    if difference >= step >> 2:
+        nibble |= 1
+        estimate += step >> 2
+    predictor += -estimate if nibble & 8 else estimate
+    predictor = max(-32768, min(32767, predictor))
+    index += _IMA_INDEX_TABLE[nibble]
+    index = max(0, min(88, index))
+    return nibble, predictor, index
+
+
+class Dvi4Encoder:
+    """Stateful IMA/DVI-4 encoder used by the camera talk stream."""
+
+    def __init__(self) -> None:
+        self.predictor = 0
+        self.index = 0
+
+    def encode_pcm16le(self, pcm: bytes) -> bytes:
+        if len(pcm) % 2:
+            raise ValueError("PCM16 data must contain complete samples")
+        samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+        if len(samples) < 2 or len(samples) % 2:
+            raise ValueError("DVI-4 blocks require an even number of samples >= 2")
+
+        encoded = bytearray(struct.pack("<hBB", self.predictor, self.index, 0))
+        for offset in range(0, len(samples), 2):
+            first, self.predictor, self.index = _ima_encode_nibble(
+                samples[offset], self.predictor, self.index
+            )
+            second, self.predictor, self.index = _ima_encode_nibble(
+                samples[offset + 1], self.predictor, self.index
+            )
+            encoded.append((first << 4) | second)
+        return bytes(encoded)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMixFrame:
+    """Camera microphone (far end) and local talk signal (near end)."""
+
+    far_end: bytes
+    near_end: bytes
+
+    @property
+    def incoming_pcm(self) -> bytes:
+        """Play the camera microphone, never the local talkback signal."""
+        return self.far_end
+
+
+def parse_native_mix_frame(payload: bytes) -> NativeMixFrame | None:
+    """Split verified SDK callback PCM, never an encrypted wire payload."""
+    if not payload:
+        return None
+    if len(payload) != 4096:
+        raise ValueError("SDK mix callback must contain two 2048-byte PCM buffers")
+    midpoint = 2048
+    return NativeMixFrame(payload[:midpoint], payload[midpoint:])
+
+
+def parse_wire_mix_frame(payload: bytes) -> NativeMixFrame:
+    """Decode the observed 01dc mix container after AES-CFB decryption.
+
+    The 40-byte metadata block contains five 4-byte TLVs. Types 3/4 give
+    the first PCM region's offset/length; types 5/6 give the second's.
+    """
+    if len(payload) != 4160 or payload[:8] != b"01dcH264":
+        raise ValueError("unexpected native mix container")
+    data_size, metadata_size = struct.unpack_from("<II", payload, 8)
+    if data_size != 4096 or metadata_size != 40 or len(payload) != 24 + metadata_size + data_size:
+        raise ValueError("native mix container length mismatch")
+    metadata = payload[24:64]
+    fields: dict[int, bytes] = {}
+    position = 3  # Three observed container-specific bytes precede the TLVs.
+    for expected_type in range(2, 7):
+        if position + 3 > len(metadata):
+            raise ValueError("truncated native mix metadata")
+        field_type = metadata[position]
+        field_size = struct.unpack_from("<H", metadata, position + 1)[0]
+        position += 3
+        if field_type != expected_type or field_size != 4 or position + field_size > len(metadata):
+            raise ValueError("invalid native mix metadata field")
+        fields[field_type] = metadata[position:position + field_size]
+        position += field_size
+    if metadata[position:] != b"\x00\x00":
+        raise ValueError("unexpected native mix metadata trailer")
+    if fields.get(2) != b"NONE" or any(len(fields.get(kind, b"")) != 4 for kind in (3, 4, 5, 6)):
+        raise ValueError("unsupported native mix metadata")
+    first_offset, first_length, second_offset, second_length = (
+        struct.unpack("<I", fields[kind])[0] for kind in (3, 4, 5, 6)
+    )
+    if (first_offset, first_length, second_offset, second_length) != (0, 2048, 2048, 2048):
+        raise ValueError("unexpected native mix PCM regions")
+    frame = parse_native_mix_frame(payload[64:])
+    assert frame is not None
+    return frame
+
+
+def _plausible_pcm16(data: bytes) -> bool:
+    """Reject random-looking ciphertext; quiet PCM is valid but not proof."""
+    samples = struct.unpack(f"<{len(data) // 2}h", data)
+    energy = sum(sample * sample for sample in samples)
+    if energy < len(samples) * 64 * 64:
+        return True
+    difference_energy = sum((current - previous) ** 2 for previous, current in pairwise(samples))
+    return difference_energy * 2 < energy * 3
+
+
+@dataclass(frozen=True, slots=True)
+class TalkConfig:
+    """The negotiated camera-facing talk configuration."""
+
+    channel_id: int = 0
+    sample_rate: int = SAMPLE_RATE
+    sample_precision: int = 16
+    length_per_encoder: int = 1024
+    duplex: str = "FDX"
+    audio_stream_mode: str = "followVideoStream"
+    sound_track: str = "mono"
+    version: str = "1.1"
+
+    def to_xml(self) -> bytes:
+        """Serialize the TalkConfig body used by MSG_ID_TALK_CONFIG."""
+        values = (
+            f'<TalkConfig version="{escape(self.version)}">'
+            f"<channelId>{self.channel_id}</channelId>"
+            f"<duplex>{escape(self.duplex)}</duplex>"
+            f"<audioStreamMode>{escape(self.audio_stream_mode)}</audioStreamMode>"
+            "<audioConfig>"
+            "<audioType>adpcm</audioType>"
+            f"<sampleRate>{self.sample_rate}</sampleRate>"
+            f"<samplePrecision>{self.sample_precision}</samplePrecision>"
+            f"<lengthPerEncoder>{self.length_per_encoder}</lengthPerEncoder>"
+            f"<soundTrack>{escape(self.sound_track)}</soundTrack>"
+            "</audioConfig>"
+            "</TalkConfig>"
+        )
+        return XML_DECLARATION + f'<body>{values}</body>'.encode()
+
+
+@dataclass(frozen=True, slots=True)
+class TalkAbility:
+    """Talk profile advertised by the camera."""
+
+    version: str = "1.1"
+    duplex: str = "FDX"
+    audio_stream_mode: str = "followVideoStream"
+    audio_type: str = "adpcm"
+    sample_rate: int = SAMPLE_RATE
+    sample_precision: int = 16
+    length_per_encoder: int = SAMPLES_PER_FRAME
+    sound_track: str = "mono"
+
+    def to_config(self, channel_id: int) -> TalkConfig:
+        return TalkConfig(
+            channel_id=channel_id,
+            version=self.version or "1.1",
+            duplex=self.duplex,
+            audio_stream_mode=self.audio_stream_mode,
+            sample_rate=self.sample_rate,
+            sample_precision=self.sample_precision,
+            length_per_encoder=self.length_per_encoder,
+            sound_track=self.sound_track,
+        )
+
+
+def serialize_adpcm_media_with_field(data: bytes, *, field_value: int) -> bytes:
+    """Serialize one ADPCM block with the observed final media-header word."""
+    if not 0 <= field_value <= 0xFFFF:
+        raise ValueError("ADPCM media-header field must fit in uint16")
+    payload_size = len(data) + 4
+    media = struct.pack(
+        "<IHHHH",
+        BCMEDIA_ADPCM_MAGIC,
+        payload_size,
+        payload_size,
+        BCMEDIA_ADPCM_DATA_MAGIC,
+        field_value,
+    ) + data
+    return media + bytes((-payload_size) % 8)
+
+
+def serialize_talk_message(
+    *,
+    msg_id: int,
+    msg_num: int,
+    channel_id: int = 0,
+    payload: bytes = b"",
+    extension: bytes = b"",
+    stream_type: int = 0,
+    response_code: int = 0,
+    message_class: int = BC_CLASS_MODERN_24,
+) -> bytes:
+    """Serialize a modern Baichuan message without XML encryption.
+
+    Authentication negotiates XML encryption separately.  This low-level
+    serializer therefore refuses to pretend that encrypted sessions are
+    supported; callers must supply the negotiated cipher layer before using
+    it against a camera.
+    """
+    if not 0 <= channel_id <= 255 or not 0 <= stream_type <= 255:
+        raise ValueError("channel_id and stream_type must fit in one byte")
+    if not 0 <= msg_num <= 0xFFFF or not 0 <= response_code <= 0xFFFF:
+        raise ValueError("message number and response code must fit in uint16")
+    if message_class != BC_CLASS_MODERN_24:
+        raise ValueError("only the modern 24-byte header is supported")
+    body = extension + payload
+    header = struct.pack(
+        "<III BBHHH I",
+        BC_MAGIC,
+        msg_id,
+        len(body),
+        channel_id,
+        stream_type,
+        msg_num,
+        response_code,
+        message_class,
+        len(extension) if extension else 0,
+    )
+    return header + body
+
+
+def serialize_talk_config_message(
+    config: TalkConfig,
+    *,
+    msg_num: int,
+    encrypt_xml: Callable[[int, bytes], bytes] | None = None,
+) -> bytes:
+    """Build the talk configuration command."""
+    extension = XML_DECLARATION + (
+        f'<Extension version="1.1"><channelId>{config.channel_id}</channelId></Extension>'.encode()
+    )
+    payload = config.to_xml()
+    if encrypt_xml is not None:
+        extension = encrypt_xml(config.channel_id, extension)
+        payload = encrypt_xml(config.channel_id, payload)
+    return serialize_talk_message(
+        msg_id=MSG_ID_TALK_CONFIG,
+        msg_num=msg_num,
+        channel_id=config.channel_id,
+        extension=extension,
+        payload=payload,
+    )
+
+
+def serialize_talk_ability_message(
+    *,
+    msg_num: int,
+    channel_id: int = 0,
+    encrypt_xml: Callable[[int, bytes], bytes] | None = None,
+) -> bytes:
+    """Build the official app's MSG 10 talk-ability request."""
+    extension = b"".join((
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n',
+        b'<Extension version="1.1">\n',
+        f'<channelId>{channel_id}</channelId>\n'.encode(),
+        b'<chnType>0</chnType>\n',
+        b'</Extension>\n',
+    ))
+    if encrypt_xml is not None:
+        extension = encrypt_xml(channel_id, extension)
+    return serialize_talk_message(
+        msg_id=MSG_ID_TALK_ABILITY,
+        msg_num=msg_num,
+        channel_id=channel_id,
+        extension=extension,
+    )
+
+
+def serialize_talk_audio_message(
+    adpcm_data: bytes,
+    *,
+    msg_num: int,
+    channel_id: int = 0,
+    media_field: int = BCMEDIA_APP_HEADER_FIELD,
+    encrypt_xml: Callable[[int, bytes], bytes] | None = None,
+) -> bytes:
+    """Build one binary MSG_ID_TALK message from a DVI-4 ADPCM block."""
+    # Match the official app's TinyXML output byte-for-byte. The line breaks,
+    # declaration space, and element order account for its 131-byte extension.
+    extension = b"".join((
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n',
+        b'<Extension version="1.1">\n',
+        b'<binaryData>1</binaryData>\n',
+        f'<channelId>{channel_id}</channelId>\n'.encode(),
+        b'</Extension>\n',
+    ))
+    if encrypt_xml is not None:
+        extension = encrypt_xml(channel_id, extension)
+    return serialize_talk_message(
+        msg_id=MSG_ID_TALK,
+        msg_num=msg_num,
+        channel_id=channel_id,
+        extension=extension,
+        payload=serialize_adpcm_media_with_field(adpcm_data, field_value=media_field),
+    )
+
+
+def md5_hex(value: str) -> str:
+    """Return Baichuan's uppercase 31-character modern MD5 representation."""
+    return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest().upper()[:31]
+
+
+def bc_encrypt(offset: int, data: bytes) -> bytes:
+    """Apply the legacy Baichuan XML XOR transform."""
+    key = (0x1F, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0xFF)
+    return bytes(value ^ key[(offset + index) % 8] ^ (offset & 0xFF) for index, value in enumerate(data))
+
+
+def make_aes_key(password: str, nonce: str) -> bytes:
+    """Derive the 128-bit AES key used by modern Baichuan sessions."""
+    phrase_digest = hashlib.md5(
+        f"{nonce}-{password}".encode(), usedforsecurity=False
+    ).hexdigest().upper()
+    return phrase_digest.encode()[:16]
+
+
+def aes_cfb_encrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
+    """Encrypt XML using AES-128-CFB, matching the public reference client."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+        try:
+            from cryptography.hazmat.decrepit.ciphers import modes
+        except ImportError:  # pragma: no cover - older cryptography
+            from cryptography.hazmat.primitives.ciphers import modes
+    except ImportError as err:  # pragma: no cover - depends on HA runtime
+        raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
+    if len(key) != 16 or len(iv) != 16:
+        raise ValueError("AES-CFB requires 16-byte key and IV")
+    return Cipher(algorithms.AES(key), modes.CFB(iv)).encryptor().update(data)
+
+
+def aes_cfb_decrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
+    """Decrypt XML using AES-128-CFB, matching the public reference client."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+        try:
+            from cryptography.hazmat.decrepit.ciphers import modes
+        except ImportError:  # pragma: no cover - older cryptography
+            from cryptography.hazmat.primitives.ciphers import modes
+    except ImportError as err:  # pragma: no cover - depends on HA runtime
+        raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
+    if len(key) != 16 or len(iv) != 16:
+        raise ValueError("AES-CFB requires 16-byte key and IV")
+    return Cipher(algorithms.AES(key), modes.CFB(iv)).decryptor().update(data)
+
+
+def modern_login_digests(username: str, password: str, nonce: str) -> tuple[str, str]:
+    """Build the username/password digests for the modern login message."""
+    return md5_hex(username + nonce), md5_hex(password + nonce)
+
+
+@dataclass(frozen=True, slots=True)
+class BaichuanHeader:
+    """Parsed Baichuan message header."""
+
+    message_id: int
+    body_length: int
+    channel_id: int
+    stream_type: int
+    message_number: int
+    response_code: int
+    message_class: int
+    payload_offset: int | None
+
+    @property
+    def header_length(self) -> int:
+        return 24 if self.message_class in (BC_CLASS_MODERN_24, 0) else 20
+
+
+def parse_baichuan_header(data: bytes) -> BaichuanHeader:
+    """Parse one 20- or 24-byte Baichuan header."""
+    if len(data) < 20:
+        raise ValueError("Baichuan header is truncated")
+    magic = struct.unpack_from("<I", data)[0]
+    if magic not in (BC_MAGIC, 0x0FEDCBA0):
+        raise ValueError("unexpected Baichuan magic")
+    message_id, body_length = struct.unpack_from("<II", data, 4)
+    channel_id, stream_type, message_number, response_code, message_class = struct.unpack_from(
+        "<BBHHH", data, 12
+    )
+    payload_offset = None
+    if message_class in (BC_CLASS_MODERN_24, 0) and len(data) >= 24:
+        payload_offset = struct.unpack_from("<I", data, 20)[0]
+    return BaichuanHeader(
+        message_id,
+        body_length,
+        channel_id,
+        stream_type,
+        message_number,
+        response_code,
+        message_class,
+        payload_offset,
+    )
+
+
+def split_baichuan_message(data: bytes) -> tuple[BaichuanHeader, bytes, bytes]:
+    """Split a complete message into header, extension, and payload bytes."""
+    header = parse_baichuan_header(data)
+    end = header.header_length + header.body_length
+    if len(data) != end:
+        raise ValueError(f"Baichuan message length mismatch: got {len(data)}, expected {end}")
+    body = data[header.header_length:end]
+    offset = header.payload_offset or 0
+    if offset > len(body):
+        raise ValueError("Baichuan payload offset exceeds body length")
+    return header, body[:offset], body[offset:]
+
+
+def serialize_login_upgrade(*, message_number: int, encryption_code: int = 0xDC12) -> bytes:
+    """Build the legacy header-only login negotiation message."""
+    return struct.pack(
+        "<III BBHHH",
+        BC_MAGIC,
+        1,
+        0,
+        0,
+        0,
+        message_number,
+        encryption_code,
+        0x6514,
+    )
+
+
+class BaichuanTcpClient:
+    """Minimal framed TCP transport for a single Baichuan session."""
+
+    def __init__(self, host: str, *, port: int = NATIVE_TALK_PORT) -> None:
+        self.host = host
+        self.port = port
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
+        self._message_number = 0
+
+    async def connect(self) -> None:
+        """Open the camera's proprietary media/control TCP service."""
+        async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+
+    async def close(self) -> None:
+        """Close the session transport."""
+        writer = self.writer
+        self.reader = None
+        self.writer = None
+        if writer is not None:
+            writer.close()
+            try:
+                async with asyncio.timeout(CLOSE_TIMEOUT_SECONDS):
+                    await writer.wait_closed()
+            except TimeoutError:
+                writer.transport.abort()
+
+    def next_message_number(self) -> int:
+        """Return the next 16-bit Baichuan message number."""
+        self._message_number = (self._message_number + 1) & 0xFFFF
+        return self._message_number
+
+    async def send(self, message: bytes) -> None:
+        """Write one complete Baichuan message and flush it."""
+        if self.writer is None:
+            raise RuntimeError("Baichuan TCP client is not connected")
+        self.writer.write(message)
+        async with asyncio.timeout(WRITE_TIMEOUT_SECONDS):
+            await self.writer.drain()
+
+    async def receive(self) -> tuple[BaichuanHeader, bytes, bytes]:
+        """Read one complete framed Baichuan message."""
+        if self.reader is None:
+            raise RuntimeError("Baichuan TCP client is not connected")
+        prefix = await self.reader.readexactly(20)
+        header = parse_baichuan_header(prefix)
+        if header.body_length > MAX_NATIVE_BODY_BYTES:
+            raise ValueError("Baichuan frame exceeds the native audio/control size limit")
+        async with asyncio.timeout(FRAME_READ_TIMEOUT_SECONDS):
+            extra = await self.reader.readexactly(4) if header.header_length == 24 else b""
+            if extra and struct.unpack("<I", extra)[0] > header.body_length:
+                raise ValueError("Baichuan payload offset exceeds body length")
+            body = await self.reader.readexactly(header.body_length)
+        return split_baichuan_message(prefix + extra + body)
+
+
+class NativeTalkSession:
+    """Authenticated native-talk session for a local Reolink camera."""
+
+    RESPONSE_TIMEOUT_SECONDS = 10
+
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        channel: int = 0,
+        trace: Callable[[str], None] | None = None,
+        mix_frame_callback: Callable[[NativeMixFrame], None] | None = None,
+        max_encryption: int = 0xDC12,
+    ) -> None:
+        self.client = BaichuanTcpClient(host)
+        self.username = username
+        self.password = password
+        self.channel = channel
+        self._aes_key: bytes | None = None
+        self._encryption_mode = 0
+        self._logged_in = False
+        self._audio_encoder = Dvi4Encoder()
+        self._audio_send_lock = asyncio.Lock()
+        self._audio_samples_per_frame = SAMPLES_PER_FRAME
+        self._audio_frame_duration = FRAME_DURATION_MS / 1000
+        self._next_audio_send_at: float | None = None
+        self.last_encode_ms: float | None = None
+        self.last_tcp_write_ms: float | None = None
+        self.trace = trace
+        self.mix_frame_callback = mix_frame_callback
+        self.raw_frame_callback: Callable[[BaichuanHeader, bytes, bytes], None] | None = None
+        self._mix_frame_count = 0
+        self._mix_raw_messages = 0
+        self._mix_header_counts: dict[str, int] = {}
+        self._mix_parsed_frames = 0
+        self._mix_forwarded_frames = 0
+        self._mix_rejected_frames = 0
+        self._mix_pcm_evidence_frames = 0
+        self._mix_pcm_verified = False
+        self._mix_extension_xml_frames = 0
+        self._mix_payload_media_magic_frames = 0
+        self._mix_reader_error: str | None = None
+        self._last_mix_frame_at: float | None = None
+        self._response_queue: asyncio.Queue[tuple[BaichuanHeader, bytes, bytes] | None] = asyncio.Queue(maxsize=16)
+        self._mix_reader_task: asyncio.Task[None] | None = None
+        self.max_encryption = max_encryption
+        self.last_talk_ability_profiles: list[TalkAbility] = []
+        self.last_talk_ability_xml: bytes | None = None
+
+    def _trace(self, message: str) -> None:
+        if self.trace is not None:
+            self.trace(message)
+
+    @staticmethod
+    def _xml_bytes(raw: bytes, *, key: bytes | None = None) -> bytes:
+        candidates = [raw]
+        if key is not None:
+            candidates.insert(0, aes_cfb_decrypt(key, raw))
+        candidates.append(bc_encrypt(0, raw))
+        for candidate in candidates:
+            if b"<" not in candidate:
+                continue
+            xml = candidate[candidate.index(b"<") :].rstrip(b"\x00")
+            try:
+                ElementTree.fromstring(xml)
+            except ElementTree.ParseError:
+                continue
+            return xml
+        raise ValueError("Baichuan payload is not recognizable XML")
+
+    async def login(self) -> None:
+        """Perform the local legacy/modern login sequence."""
+        await self.client.connect()
+        number = self.client.next_message_number()
+        await self.client.send(
+            serialize_login_upgrade(
+                message_number=number,
+                encryption_code=self.max_encryption,
+            )
+        )
+        reply_header, _, reply_payload = await asyncio.wait_for(
+            self.client.receive(), self.RESPONSE_TIMEOUT_SECONDS
+        )
+        self._trace(
+            f"login negotiation: id={reply_header.message_id} class=0x{reply_header.message_class:04x} "
+            f"response={reply_header.response_code} body={reply_header.body_length} payload={len(reply_payload)}"
+        )
+        encryption_xml = self._xml_bytes(reply_payload)
+        self._trace(f"login negotiation XML: {encryption_xml.decode(errors='replace')}")
+        nonce_match = re.search(rb"<nonce>([^<]+)</nonce>", encryption_xml)
+        if nonce_match is None:
+            raise ValueError("camera login reply did not contain a nonce")
+        nonce = nonce_match.group(1).decode()
+        self._encryption_mode = reply_header.response_code & 0xFF
+        if self._encryption_mode not in (0x00, 0x01, 0x02, 0x12):
+            raise ValueError(f"camera selected unsupported encryption: 0x{self._encryption_mode:02x}")
+        if self._encryption_mode in (0x02, 0x12):
+            self._aes_key = make_aes_key(self.password, nonce)
+        username_digest, password_digest = modern_login_digests(
+            self.username, self.password, nonce
+        )
+        login_xml = XML_DECLARATION + (
+            '<body><LoginUser version="1.1">'
+            f"<userName>{escape(username_digest)}</userName>"
+            f"<password>{escape(password_digest)}</password>"
+            "<userVer>1</userVer></LoginUser>"
+            '<LoginNet version="1.1"><type>LAN</type><udpPort>0</udpPort></LoginNet>'
+            "</body>"
+        ).encode()
+        modern = serialize_talk_message(
+            msg_id=1,
+            msg_num=number,
+            channel_id=self.channel,
+            # The modern login itself is always BCEncrypt.  The negotiated
+            # AES/FullAES mode becomes active only after its 200 response.
+            extension=b"",
+            payload=bc_encrypt(self.channel, login_xml),
+        )
+        self._trace(
+            f"login request: id=1 class=0x{BC_CLASS_MODERN_24:04x} "
+            f"extension=0 payload={len(login_xml)} encrypted=bc"
+        )
+        await self.client.send(modern)
+        result_header, _, result_payload = await asyncio.wait_for(
+            self.client.receive(), self.RESPONSE_TIMEOUT_SECONDS
+        )
+        self._trace(
+            f"login result: id={result_header.message_id} class=0x{result_header.message_class:04x} "
+            f"response={result_header.response_code} body={result_header.body_length} payload={len(result_payload)}"
+        )
+        if result_header.response_code != 200:
+            raise NativeTalkAuthError(f"camera rejected native login: {result_header.response_code}")
+        self._xml_bytes(result_payload)
+        self._logged_in = True
+
+    async def close(self) -> None:
+        if self._mix_reader_task is not None:
+            self._mix_reader_task.cancel()
+            await asyncio.gather(self._mix_reader_task, return_exceptions=True)
+            self._mix_reader_task = None
+        try:
+            await self.client.close()
+        except (ConnectionResetError, BrokenPipeError):
+            # The camera may reset the socket after rejecting a talk packet.
+            # Preserve the original protocol error instead of masking it while
+            # cleaning up the probe/session.
+            pass
+        finally:
+            self._logged_in = False
+            self._next_audio_send_at = None
+
+    def _encrypt_xml(self, offset: int, payload: bytes) -> bytes:
+        if self._encryption_mode in (0x02, 0x12):
+            if self._aes_key is None:
+                raise RuntimeError("native talk AES key is not available")
+            return aes_cfb_encrypt(self._aes_key, payload)
+        if self._encryption_mode == 0x01:
+            return bc_encrypt(offset, payload)
+        return payload
+
+    async def open_talk(self, config: TalkConfig) -> None:
+        """Reproduce the SDK AudioTalkOpen request and acknowledgement flow."""
+        if not self._logged_in:
+            raise RuntimeError("native talk session is not authenticated")
+        # Channel.talkOpen() passes the selected BC_TALK_CONFIG directly to
+        # BCSDK_AudioTalkOpen and waits for the SDK's command acknowledgement.
+        message = serialize_talk_config_message(
+            config,
+            msg_num=self.client.next_message_number(),
+            encrypt_xml=self._encrypt_xml,
+        )
+        await self.client.send(message)
+        header, _, _ = await self._receive_response(MSG_ID_TALK_CONFIG)
+        self._trace(
+            f"AudioTalkOpen acknowledgement: id={header.message_id} response={header.response_code}"
+        )
+        if header.response_code == 422:
+            await self.stop_talk()
+            await self.client.send(
+                serialize_talk_config_message(
+                    config,
+                    msg_num=self.client.next_message_number(),
+                    encrypt_xml=self._encrypt_xml,
+                )
+            )
+            header, _, _ = await self._receive_response(MSG_ID_TALK_CONFIG)
+            self._trace(
+                f"AudioTalkOpen retry acknowledgement: id={header.message_id} response={header.response_code}"
+            )
+            if header.response_code == 422:
+                # A camera can retain a previous talk owner after a dropped
+                # TCP connection. Recreate the whole native session instead
+                # of retrying the rejected configuration on the same socket.
+                self._trace("AudioTalkOpen still rejected; reconnecting native session")
+                await self.close()
+                await self.login()
+                config = (await self.talk_ability()).to_config(self.channel)
+                await self.client.send(
+                    serialize_talk_config_message(
+                        config,
+                        msg_num=self.client.next_message_number(),
+                        encrypt_xml=self._encrypt_xml,
+                    )
+                )
+                header, _, _ = await self._receive_response(MSG_ID_TALK_CONFIG)
+                self._trace(
+                    f"AudioTalkOpen reconnect acknowledgement: id={header.message_id} response={header.response_code}"
+                )
+        if header.response_code != 200:
+            raise PermissionError(f"camera rejected talk configuration: {header.response_code}")
+        if config.sample_rate <= 0 or config.length_per_encoder <= 0:
+            raise ValueError("camera returned an invalid audio frame configuration")
+        self._audio_samples_per_frame = config.length_per_encoder
+        self._audio_frame_duration = config.length_per_encoder / config.sample_rate
+        self._next_audio_send_at = None
+        if config.audio_stream_mode == "mixAudioStream" and self._mix_reader_task is None:
+            self._mix_reader_error = None
+            self._mix_reader_task = asyncio.create_task(self._read_mix_frames())
+
+    async def _read_mix_frames(self) -> None:
+        """Drain unsolicited mix frames and preserve control responses."""
+        while True:
+            try:
+                header, extension, payload = await self.client.receive()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001 - wake waiters after transport failure
+                self._mix_reader_error = f"{type(err).__name__}: {err}"
+                if self._response_queue.full():
+                    self._response_queue.get_nowait()
+                self._response_queue.put_nowait(None)
+                return
+            self._mix_raw_messages += 1
+            header_key = f"{header.message_id}/{header.response_code}"
+            self._mix_header_counts[header_key] = self._mix_header_counts.get(header_key, 0) + 1
+            if self.raw_frame_callback is not None:
+                try:
+                    self.raw_frame_callback(header, extension, payload)
+                except Exception:
+                    _LOGGER.debug("Native raw-frame observer failed", exc_info=True)
+            if header.message_id == MSG_ID_TALK:
+                if not payload:
+                    # Audio write acknowledgements are not control responses.
+                    continue
+                frame = None
+                if self._aes_key is not None:
+                    try:
+                        if aes_cfb_decrypt(self._aes_key, extension).startswith(b"<?xml"):
+                            self._mix_extension_xml_frames += 1
+                        decoded = aes_cfb_decrypt(self._aes_key, payload)
+                        if b"0\x31wb" in decoded[:80] or decoded.startswith(b"01dcH264"):
+                            self._mix_payload_media_magic_frames += 1
+                        frame = parse_wire_mix_frame(decoded)
+                    except Exception:  # noqa: BLE001 - reject corrupt encrypted frames
+                        # A bad frame must not interrupt control responses or audio send.
+                        self._mix_rejected_frames += 1
+                now = time.monotonic()
+                interval = (
+                    "first"
+                    if self._last_mix_frame_at is None
+                    else f"{(now - self._last_mix_frame_at) * 1000:.1f} ms"
+                )
+                self._last_mix_frame_at = now
+                self._mix_frame_count += 1
+                self._trace(
+                    f"mix frame: count={self._mix_frame_count} "
+                    f"interval={interval} extension={len(extension)} payload={len(payload)}"
+                )
+                if frame is None:
+                    continue
+                self._mix_parsed_frames += 1
+                if not (_plausible_pcm16(frame.far_end) and _plausible_pcm16(frame.near_end)):
+                    self._mix_rejected_frames += 1
+                    self._mix_pcm_evidence_frames = 0
+                    continue
+                if not self._mix_pcm_verified:
+                    if any(abs(sample) >= 64 for sample in struct.unpack("<1024h", frame.incoming_pcm)):
+                        self._mix_pcm_evidence_frames += 1
+                    if self._mix_pcm_evidence_frames < 2:
+                        continue
+                    self._mix_pcm_verified = True
+                if self.mix_frame_callback is not None:
+                    try:
+                        self.mix_frame_callback(frame)
+                        self._mix_forwarded_frames += 1
+                    except Exception as err:  # noqa: BLE001 - user callback must not stop receiver
+                        self._mix_rejected_frames += 1
+                        self._trace(f"mix callback failed: {type(err).__name__}: {err}")
+                continue
+            if self._response_queue.full():
+                self._response_queue.get_nowait()
+            self._response_queue.put_nowait((header, extension, payload))
+
+    def mix_diagnostics(self) -> dict:
+        """Return counts only; never expose camera payloads or credentials."""
+        return {
+            "raw_messages": self._mix_raw_messages,
+            "headers": dict(self._mix_header_counts),
+            "talk_candidates": self._mix_frame_count,
+            "parsed_frames": self._mix_parsed_frames,
+            "forwarded_frames": self._mix_forwarded_frames,
+            "rejected_frames": self._mix_rejected_frames,
+            "pcm_verified": self._mix_pcm_verified,
+            "aes_extension_xml_frames": self._mix_extension_xml_frames,
+            "aes_payload_media_magic_frames": self._mix_payload_media_magic_frames,
+            "reader_error": self._mix_reader_error,
+        }
+
+    def decrypt_wire_prefix(self, payload: bytes, *, limit: int = 64) -> bytes:
+        """Decrypt a bounded receive prefix for explicit protocol inspection."""
+        if self._aes_key is None:
+            raise RuntimeError("native AES key is unavailable")
+        if limit < 1 or limit > 64:
+            raise ValueError("receive prefix limit must be between 1 and 64 bytes")
+        return aes_cfb_decrypt(self._aes_key, payload[:limit])
+
+    async def _receive_response(self, expected_id: int | None = None) -> tuple[BaichuanHeader, bytes, bytes]:
+        deadline = asyncio.get_running_loop().time() + self.RESPONSE_TIMEOUT_SECONDS
+        if self._mix_reader_task is None:
+            while True:
+                response = await asyncio.wait_for(
+                    self.client.receive(), max(0, deadline - asyncio.get_running_loop().time())
+                )
+                if expected_id is None or response[0].message_id == expected_id:
+                    return response
+        while True:
+            if self._mix_reader_error is not None:
+                raise RuntimeError(f"native mix reader stopped: {self._mix_reader_error}")
+            response = await asyncio.wait_for(
+                self._response_queue.get(), max(0, deadline - asyncio.get_running_loop().time())
+            )
+            if response is None:
+                raise RuntimeError(f"native mix reader stopped: {self._mix_reader_error}")
+            if expected_id is None or response[0].message_id == expected_id:
+                return response
+
+    async def talk_ability(self) -> TalkAbility:
+        """Read and select the camera's native ADPCM talk profile."""
+        if not self._logged_in:
+            raise RuntimeError("native talk session is not authenticated")
+        await self.client.send(
+            serialize_talk_ability_message(
+                msg_num=0,
+                channel_id=self.channel,
+                encrypt_xml=self._encrypt_xml,
+            )
+        )
+        # Cameras can interleave unsolicited configuration responses (for
+        # example VideoInput) with the requested talk-ability response.
+        # Match the response message id instead of assuming the next packet
+        # belongs to this request.
+        deadline = asyncio.get_running_loop().time() + self.RESPONSE_TIMEOUT_SECONDS
+        while True:
+            header, extension, payload = await asyncio.wait_for(
+                self.client.receive(), max(0, deadline - asyncio.get_running_loop().time())
+            )
+            if header.message_id == MSG_ID_TALK_ABILITY:
+                break
+            self._trace(
+                f"ignoring unsolicited native response while reading talk ability: "
+                f"id={header.message_id} response={header.response_code}"
+            )
+        if header.response_code != 200:
+            raise PermissionError(f"camera rejected talk ability request: {header.response_code}")
+        try:
+            xml = self._xml_bytes(payload, key=self._aes_key)
+        except ValueError as payload_error:
+            # Firmware variants place the header-only native ability response
+            # in the Baichuan extension field instead of the payload field.
+            try:
+                xml = self._xml_bytes(extension, key=self._aes_key)
+            except ValueError:
+                raise payload_error
+        root = ElementTree.fromstring(xml)
+        self.last_talk_ability_xml = xml
+        def local_name(tag: str) -> str:
+            return tag.rsplit("}", 1)[-1]
+
+        def children_named(node: ElementTree.Element, name: str) -> list[ElementTree.Element]:
+            return [child for child in node.iter() if local_name(child.tag) == name]
+
+        talk = next((node for node in root.iter() if local_name(node.tag) == "TalkAbility"), None)
+        if talk is None:
+            tags = ",".join(local_name(node.tag) for node in root.iter())
+            snippet = xml[:240].decode(errors="replace")
+            raise ValueError(
+                f"camera talk ability response did not contain TalkAbility "
+                f"(root={local_name(root.tag)}, tags={tags}, xml={snippet!r})"
+            )
+        duplexes = [node.text for node in children_named(talk, "duplex") if node.text]
+        modes = [node.text for node in children_named(talk, "audioStreamMode") if node.text]
+        configs = [node for node in children_named(talk, "audioConfig")]
+        profiles = []
+        for config in configs:
+            audio_type = next(
+                (node.text for node in children_named(config, "audioType") if node.text),
+                "",
+            )
+            profiles.append(
+                TalkAbility(
+                    version=talk.attrib.get("version", "1.1"),
+                    duplex="fullDuplex" if "fullDuplex" in duplexes else (duplexes[0] if duplexes else "FDX"),
+                    audio_stream_mode=(
+                        "mixAudioStream" if "mixAudioStream" in modes
+                        else ("speaker" if "speaker" in modes else (modes[0] if modes else "followVideoStream"))
+                    ),
+                    audio_type=audio_type,
+                    sample_rate=int(_xml_child_text(config, "sampleRate", str(SAMPLE_RATE))),
+                    sample_precision=int(_xml_child_text(config, "samplePrecision", "16")),
+                    length_per_encoder=int(_xml_child_text(config, "lengthPerEncoder", str(SAMPLES_PER_FRAME))),
+                    sound_track=_xml_child_text(config, "soundTrack", "mono"),
+                )
+            )
+        self.last_talk_ability_profiles = profiles
+        selected = next((profile for profile in profiles if profile.audio_type == "adpcm"), None)
+        if selected is None:
+            raise ValueError("camera did not advertise an ADPCM talk profile")
+        return selected
+
+    async def send_audio(self, adpcm_data: bytes) -> None:
+        """Send one already-encoded ADPCM block."""
+        if not self._logged_in:
+            raise RuntimeError("native talk session is not authenticated")
+        async with self._audio_send_lock:
+            await self.client.send(
+                serialize_talk_audio_message(
+                    adpcm_data,
+                    msg_num=0,
+                    channel_id=self.channel,
+                    encrypt_xml=self._encrypt_xml,
+                )
+            )
+
+    async def send_pcm(self, pcm16le: bytes) -> None:
+        """Encode and send one PCM talk frame using continuous DVI-4 state."""
+        expected_bytes = self._audio_samples_per_frame * 2
+        if len(pcm16le) != expected_bytes:
+            raise ValueError(
+                f"expected {self._audio_samples_per_frame} samples "
+                f"({expected_bytes} PCM bytes), got {len(pcm16le)} bytes"
+            )
+        # The encoder carries predictor/index state across frames.  Keep the
+        # encoding inside the same lock as transmission so concurrent
+        # WebSocket audio commands cannot corrupt or reorder that state.
+        async with self._audio_send_lock:
+            now = time.monotonic()
+            if self._next_audio_send_at is None:
+                self._next_audio_send_at = now
+            await asyncio.sleep(max(0.0, self._next_audio_send_at - now))
+            encode_started = time.monotonic()
+            encoded = self._audio_encoder.encode_pcm16le(pcm16le)
+            self.last_encode_ms = (time.monotonic() - encode_started) * 1000
+            message = serialize_talk_audio_message(
+                encoded,
+                msg_num=0,
+                channel_id=self.channel,
+                encrypt_xml=self._encrypt_xml,
+            )
+            write_started = time.monotonic()
+            await self.client.send(message)
+            self.last_tcp_write_ms = (time.monotonic() - write_started) * 1000
+            # Advance on the audio clock, not from write completion. This
+            # prevents normal socket/write time from being added to every
+            # frame. If the sender is genuinely late, restart one frame ahead
+            # instead of flushing the backlog as a TCP burst.
+            next_deadline = self._next_audio_send_at + self._audio_frame_duration
+            now = time.monotonic()
+            self._next_audio_send_at = (
+                next_deadline
+                if next_deadline > now
+                else now + self._audio_frame_duration
+            )
+
+    async def stop_talk(self) -> None:
+        """Send the native talk reset command."""
+        if not self._logged_in:
+            return
+        extension = XML_DECLARATION + (
+            f'<Extension version="1.1"><channelId>{self.channel}</channelId></Extension>'.encode()
+        )
+        await self.client.send(
+            serialize_talk_message(
+                msg_id=MSG_ID_TALK_STOP,
+                msg_num=self.client.next_message_number(),
+                channel_id=self.channel,
+                extension=self._encrypt_xml(self.channel, extension),
+            )
+        )
+        header, _, _ = await self._receive_response(MSG_ID_TALK_STOP)
+        if header.response_code not in (200, 421, 422):
+            raise PermissionError(f"camera rejected talk stop: {header.response_code}")
+
+
+class NativeTalkChannel:
+    """High-level native-talk session with negotiated audio and lifecycle state."""
+
+    AUDIO_QUEUE_MAXSIZE = 2
+    MAX_AUDIO_AGE_SECONDS = 0.128
+    DRAIN_TIMEOUT_SECONDS = 1
+    STOP_TIMEOUT_SECONDS = 2
+
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        channel: int = 0,
+        mix_frame_callback: Callable[[NativeMixFrame], None] | None = None,
+    ) -> None:
+        self.host = host
+        self.username = username
+        self.password = password
+        self.channel = channel
+        self.mix_frame_callback = mix_frame_callback
+        self._raw_frame_callback: Callable[[BaichuanHeader, bytes, bytes], None] | None = None
+        self.transport: NativeTalkSession | None = None
+        self.talk_config: TalkConfig | None = None
+        self._audio_queue: asyncio.Queue[tuple[bytes, float, asyncio.Future[None]]] | None = None
+        self._audio_worker: asyncio.Task[None] | None = None
+        self._audio_error: Exception | None = None
+        self.last_queue_wait_ms: float | None = None
+        self.dropped_audio_frames = 0
+        self._lifecycle_lock = asyncio.Lock()
+        self._stopping = False
+
+    @property
+    def active(self) -> bool:
+        """Whether the negotiated talk session is ready to send audio."""
+        return not self._stopping and self.transport is not None and self._audio_queue is not None
+
+    @property
+    def failed(self) -> bool:
+        """Whether either side of the native TCP session has failed."""
+        return self._audio_error is not None or bool(
+            self.transport and getattr(self.transport, "_mix_reader_error", None)
+        )
+
+    async def start(self) -> None:
+        """Authenticate, negotiate TalkAbility, and open the talk channel."""
+        async with self._lifecycle_lock:
+            if self.active:
+                return
+            transport = NativeTalkSession(
+                self.host,
+                self.username,
+                self.password,
+                channel=self.channel,
+                mix_frame_callback=self.mix_frame_callback,
+            )
+            transport.raw_frame_callback = self._raw_frame_callback
+            try:
+                await transport.login()
+                ability = await transport.talk_ability()
+                config = ability.to_config(self.channel)
+                await transport.open_talk(config)
+                self.transport = transport
+                self.talk_config = config
+                self._audio_queue = asyncio.Queue(maxsize=self.AUDIO_QUEUE_MAXSIZE)
+                self._audio_error = None
+                self._audio_worker = asyncio.create_task(self._audio_worker_loop())
+            except (Exception, asyncio.CancelledError):
+                await transport.close()
+                raise
+
+    async def _audio_worker_loop(self) -> None:
+        """Send queued microphone frames in capture order."""
+        while True:
+            if self._audio_queue is None:
+                return
+            pcm16le, queued_at, completion = await self._audio_queue.get()
+            try:
+                self.last_queue_wait_ms = (time.monotonic() - queued_at) * 1000
+                if self.last_queue_wait_ms > self.MAX_AUDIO_AGE_SECONDS * 1000:
+                    # Playing old speech is worse than losing a frame in a live call.
+                    self.dropped_audio_frames += 1
+                elif self.transport is not None:
+                    await self.transport.send_pcm(pcm16le)
+                if not completion.done():
+                    completion.set_result(None)
+            except asyncio.CancelledError:
+                if not completion.done():
+                    completion.cancel()
+                raise
+            except Exception as err:  # noqa: BLE001 - fail all queued frames on worker error
+                self._audio_error = err
+                if not completion.done():
+                    completion.set_exception(err)
+                while True:
+                    try:
+                        _, _, pending = self._audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if not pending.done():
+                        pending.set_exception(err)
+                    self._audio_queue.task_done()
+                return
+            finally:
+                self._audio_queue.task_done()
+
+    async def send_pcm(self, pcm16le: bytes) -> None:
+        """Queue one negotiated PCM frame for ordered transmission."""
+        completion = await self.enqueue_pcm(pcm16le)
+        await completion
+
+    async def enqueue_pcm(self, pcm16le: bytes) -> asyncio.Future[None]:
+        """Queue one frame and return without waiting for camera transmission."""
+        if not self.active or self._audio_queue is None:
+            raise RuntimeError("native talk session is not active")
+        if self.failed:
+            previous_error = self._audio_error or getattr(self.transport, "_mix_reader_error", None)
+            try:
+                await self.restart()
+            except Exception as error:
+                raise RuntimeError(
+                    f"native talk audio worker failed: {previous_error}"
+                ) from error
+            if self._audio_queue is None:
+                raise RuntimeError("native talk session is not active after restart")
+        completion = asyncio.get_running_loop().create_future()
+        if self._audio_queue.full():
+            _, _, dropped = self._audio_queue.get_nowait()
+            self.dropped_audio_frames += 1
+            if not dropped.done():
+                dropped.set_result(None)
+            self._audio_queue.task_done()
+        self._audio_queue.put_nowait((pcm16le, time.monotonic(), completion))
+        return completion
+
+    async def restart(self) -> None:
+        """Replace a failed native connection with a freshly negotiated session."""
+        if self.active:
+            try:
+                await self.stop()
+            except Exception:
+                # A broken socket may reject the reset command; close and
+                # discard it anyway before opening the replacement session.
+                _LOGGER.debug("Unable to reset failed native talk session", exc_info=True)
+        await self.start()
+
+    def set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None) -> None:
+        """Set the callback for validated camera mix frames."""
+        self.mix_frame_callback = callback
+        if self.transport is not None:
+            self.transport.mix_frame_callback = callback
+
+    def set_raw_callback(
+        self, callback: Callable[[BaichuanHeader, bytes, bytes], None] | None,
+    ) -> None:
+        """Set an opt-in observer for all post-open native receive frames."""
+        self._raw_frame_callback = callback
+        if self.transport is not None:
+            self.transport.raw_frame_callback = callback
+
+    def mix_diagnostics(self) -> dict:
+        """Return the active transport's mix receive counters."""
+        if self.transport is None:
+            return {}
+        return {
+            **self.transport.mix_diagnostics(),
+            "audio_queue_depth": self._audio_queue.qsize() if self._audio_queue else 0,
+            "audio_queue_wait_ms": self.last_queue_wait_ms,
+            "audio_encode_ms": self.transport.last_encode_ms,
+            "audio_tcp_write_ms": self.transport.last_tcp_write_ms,
+            "audio_dropped_frames": self.dropped_audio_frames,
+        }
+
+    def decrypt_wire_prefix(self, payload: bytes) -> bytes:
+        """Inspect a bounded receive prefix without exposing the session key."""
+        if self.transport is None:
+            raise RuntimeError("native talk session is not active")
+        return self.transport.decrypt_wire_prefix(payload)
+
+    async def stop(self) -> None:
+        """Drain audio, reset the camera talk state, and close the connection."""
+        async with self._lifecycle_lock:
+            transport = self.transport
+            if transport is None:
+                return
+            self._stopping = True
+            try:
+                if self._audio_queue is not None:
+                    try:
+                        async with asyncio.timeout(self.DRAIN_TIMEOUT_SECONDS):
+                            await self._audio_queue.join()
+                    except TimeoutError:
+                        _LOGGER.debug("Discarding native audio during stalled shutdown")
+            finally:
+                if self._audio_worker is not None:
+                    self._audio_worker.cancel()
+                    await asyncio.gather(self._audio_worker, return_exceptions=True)
+                if self._audio_queue is not None:
+                    while not self._audio_queue.empty():
+                        _, _, pending = self._audio_queue.get_nowait()
+                        if not pending.done():
+                            pending.cancel()
+                        self._audio_queue.task_done()
+                try:
+                    async with asyncio.timeout(self.STOP_TIMEOUT_SECONDS):
+                        await transport.stop_talk()
+                except (OSError, RuntimeError):
+                    _LOGGER.debug("Camera did not acknowledge native talk shutdown")
+                finally:
+                    try:
+                        await transport.close()
+                    finally:
+                        self._audio_worker = None
+                        self._audio_queue = None
+                        self._audio_error = None
+                        self.transport = None
+                        self.talk_config = None
+                        self._stopping = False

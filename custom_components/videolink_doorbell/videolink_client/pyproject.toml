@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videolink-doorbell-client"
+version = "0.1.0"
+description = "Async CGI and Baichuan protocol clients for Videolink doorbells"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["aiohttp>=3.11.11,<4", "cryptography>=48.0.1"]
+
+[project.urls]
+Repository = "https://github.com/rsre/VideolinkDoorbell"
+Issues = "https://github.com/rsre/VideolinkDoorbell/issues"
+
+[tool.setuptools]
+packages = ["videolink_client"]
+package-dir = {videolink_client = "."}
+
+[tool.setuptools.package-data]
+videolink_client = ["py.typed"]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -14,12 +13,9 @@ from aiohttp import ClientResponseError, RequestInfo
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
-API_PATH = Path(__file__).parents[1] / "custom_components/videolink_doorbell/api.py"
-SPEC = importlib.util.spec_from_file_location("videolink_api_under_test", API_PATH)
-assert SPEC is not None and SPEC.loader is not None
-api = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = api
-SPEC.loader.exec_module(api)
+CLIENT_PARENT = Path(__file__).parents[1] / "custom_components/videolink_doorbell"
+sys.path.insert(0, str(CLIENT_PARENT))
+from videolink_client import api
 
 
 @pytest.mark.asyncio

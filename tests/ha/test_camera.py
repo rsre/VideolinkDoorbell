@@ -101,4 +101,3 @@ async def test_orientation_preserves_backchannel_through_core_provider(camera, m
     assert (sources[0] == "https://camera.local/flv?token=old") == (orientation_name == "NO_TRANSFORM")
     assert "rtsp://camera.local/backchannel" in sources
     assert all(not url.startswith("ffmpeg:rtsp://camera.local/backchannel") for url in sources)
-

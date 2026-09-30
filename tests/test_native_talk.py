@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import math
 import random
 import struct
@@ -15,15 +14,9 @@ from typing import ClassVar
 import native_talk_legacy_fixture as legacy
 import pytest
 
-MODULE_PATH = (
-    Path(__file__).parents[1]
-    / "custom_components/videolink_doorbell/native_talk.py"
-)
-SPEC = importlib.util.spec_from_file_location("videolink_native_talk", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-native_talk = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = native_talk
-SPEC.loader.exec_module(native_talk)
+CLIENT_PARENT = Path(__file__).parents[1] / "custom_components/videolink_doorbell"
+sys.path.insert(0, str(CLIENT_PARENT))
+from videolink_client import native_talk
 
 
 @pytest.mark.asyncio

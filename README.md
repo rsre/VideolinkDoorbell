@@ -278,3 +278,13 @@ python3.14 -m venv .venv-ha
 
 These tests exercise real entry setup, scheduled retries, entity registration,
 reauthentication and repeated reload/unload cycles with mocked device I/O.
+
+
+## Standalone protocol client
+
+The CGI and native Baichuan implementation lives in the independently buildable
+[`videolink_client` package](custom_components/videolink_doorbell/videolink_client/README.md).
+It has its own dependencies, license, package metadata and protocol tests, and
+imports no Home Assistant modules. HACS uses the bundled copy. Publishing the
+package and pinning the published dependency remain prerequisites for a future
+Core submission.

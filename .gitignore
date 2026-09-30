@@ -9,3 +9,8 @@ firmware/
 
 .venv-unit/
 .venv-ha/
+
+# Python distribution artifacts
+build/
+dist/
+*.egg-info/
