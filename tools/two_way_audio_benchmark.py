@@ -100,7 +100,6 @@ from native_talk import NativeTalkSession  # noqa: E402
 from api import VideolinkClient  # noqa: E402
 from native_talk_rtsp_probe import (  # noqa: E402
     RtspAudioCapture,
-    TONE_FREQUENCY,
     _tone,
 )
 from rtsp_backchannel import RtspBackchannel  # noqa: E402

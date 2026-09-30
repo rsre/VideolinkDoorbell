@@ -129,7 +129,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ```bash
 python -m compileall custom_components/videolink_doorbell
-python -m pytest -q tests/test_api.py tests/test_go2rtc_adapter.py
+python -m pytest -q
 node --test tests/videolink-card.test.js
 ```
 
