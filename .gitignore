@@ -6,3 +6,6 @@ __pycache__/
 
 # Ignore dir
 firmware/
+
+.venv-unit/
+.venv-ha/

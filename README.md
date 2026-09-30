@@ -252,3 +252,29 @@ tone command and ends when the tone is detected in decoded doorbell RTSP audio.
 It includes speaker-to-microphone pickup and the RTSP return path. It does not
 measure browser microphone capture or give an exact speaker-onset timestamp.
 Keep the doorbell's microphone clear of other 440 Hz sounds during the test.
+
+
+## Running tests
+
+The protocol and frontend tests need Python 3.12 or later:
+
+```sh
+python -m venv .venv-unit
+.venv-unit/bin/python -m pip install -r requirements-test.txt
+.venv-unit/bin/python -m pytest -q --ignore=tests/ha --ignore=tests/test_event.py
+.venv-unit/bin/ruff check .
+node --test tests/videolink-card.test.js
+```
+
+Home Assistant tests use a separate Python 3.14.2 or later environment. The
+fixture package pins Home Assistant 2026.9.1; the extra dependencies match its
+camera, stream and go2rtc manifests.
+
+```sh
+python3.14 -m venv .venv-ha
+.venv-ha/bin/python -m pip install -r requirements-ha-test.txt
+.venv-ha/bin/python -m pytest -q tests/ha tests/test_event.py
+```
+
+These tests exercise real entry setup, scheduled retries, entity registration,
+reauthentication and repeated reload/unload cycles with mocked device I/O.

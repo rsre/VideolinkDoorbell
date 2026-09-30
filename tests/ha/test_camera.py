@@ -68,14 +68,18 @@ async def test_snapshot_auth_failure_starts_reauth_and_recovery_restores_availab
 
 
 @pytest.mark.asyncio
-async def test_orientation_preserves_backchannel_through_core_provider(camera, monkeypatch):
+@pytest.mark.parametrize("orientation_name", [
+    "NO_TRANSFORM", "MIRROR", "ROTATE_180", "FLIP", "ROTATE_LEFT_AND_FLIP",
+    "ROTATE_LEFT", "ROTATE_RIGHT_AND_FLIP", "ROTATE_RIGHT",
+])
+async def test_orientation_preserves_backchannel_through_core_provider(camera, monkeypatch, orientation_name):
     from homeassistant.components import go2rtc as core_go2rtc
     from homeassistant.components.camera import prefs
     from homeassistant.components.stream import Orientation
 
     from custom_components.videolink_doorbell import camera as camera_module
 
-    settings = AsyncMock(return_value=SimpleNamespace(orientation=Orientation.ROTATE_RIGHT))
+    settings = AsyncMock(return_value=SimpleNamespace(orientation=Orientation[orientation_name]))
     monkeypatch.setattr(prefs, "get_dynamic_camera_stream_settings", settings)
     monkeypatch.setattr(core_go2rtc, "get_dynamic_camera_stream_settings", settings)
     registered = {}
@@ -94,22 +98,7 @@ async def test_orientation_preserves_backchannel_through_core_provider(camera, m
     await provider._update_stream_source(camera)
     assert streams.add.await_count == 1
     sources = streams.add.call_args.args[1]
-    assert sources[0].endswith("#rotate=90")
+    assert (sources[0] == "https://camera.local/flv?token=old") == (orientation_name == "NO_TRANSFORM")
     assert "rtsp://camera.local/backchannel" in sources
     assert all(not url.startswith("ffmpeg:rtsp://camera.local/backchannel") for url in sources)
 
-
-@pytest.mark.asyncio
-async def test_legacy_orientation_matches_core_for_every_orientation(monkeypatch):
-    from homeassistant.components import go2rtc as core_go2rtc
-    from homeassistant.components.camera import prefs
-    from homeassistant.components.stream import Orientation
-
-    from custom_components.videolink_doorbell.go2rtc import async_oriented_video_source
-
-    if not hasattr(core_go2rtc, "_apply_orientation"):
-        pytest.skip("This Core version applies orientation inside the provider")
-    for orientation in Orientation:
-        monkeypatch.setattr(prefs, "get_dynamic_camera_stream_settings", AsyncMock(return_value=SimpleNamespace(orientation=orientation)))
-        url = "https://camera.local/flv?token=test"
-        assert await async_oriented_video_source(None, "camera.front", url) == core_go2rtc._apply_orientation(url, orientation)
