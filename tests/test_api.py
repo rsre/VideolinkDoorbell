@@ -52,6 +52,32 @@ async def test_http_errors_do_not_expose_tokens(snapshot: bool) -> None:
     assert "secret-sentinel" not in "".join(traceback.format_exception(caught.value))
 
 
+@pytest.mark.asyncio
+async def test_invalid_snapshot_is_not_a_credentials_error():
+    class Response:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        async def read(self):
+            return b"invalid jpeg"
+
+    class Session:
+        get = lambda *args, **kwargs: Response()
+
+    client = api.VideolinkClient(Session(), "camera.local", "user", "password")
+    from unittest.mock import AsyncMock
+    client.ensure_login = AsyncMock(return_value="token")
+    with pytest.raises(api.VideolinkError) as error:
+        await client.snapshot(0)
+    assert not isinstance(error.value, api.VideolinkAuthError)
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [

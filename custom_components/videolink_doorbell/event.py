@@ -18,7 +18,9 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo as HADeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from reolink_aio.api import Host
+from reolink_aio.exceptions import CredentialsInvalidError, ReolinkError
 
+from .api import VideolinkAuthError, VideolinkError
 from .camera import device_identifier
 from .const import (
     CONF_CHANNEL,
@@ -48,11 +50,16 @@ class VideolinkDoorbellRing(EventEntity):
 
     _attr_has_entity_name = True
     _attr_name = "Doorbell"
+    _attr_should_poll = False
+    _attr_available = False
     _attr_device_class = EventDeviceClass.DOORBELL
     _attr_event_types: ClassVar[list[str]] = [DoorbellEventType.RING]
 
     def __init__(self, entry: ConfigEntry[VideolinkRuntime], hass: HomeAssistant) -> None:
         super().__init__()
+        self._entry = entry
+        self._client = entry.runtime_data.client
+        self._failure_logged = False
         self._channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
         if entry.unique_id is None:
             raise ValueError("Videolink config entry has no unique ID")
@@ -78,10 +85,30 @@ class VideolinkDoorbellRing(EventEntity):
     def _handle_push(self) -> None:
         """The Baichuan library has already updated its visitor state."""
         pressed = self._host.visitor_detected(self._channel)
+        recovered = not self._attr_available
+        self._attr_available = True
+        self._failure_logged = False
         if pressed and not self._pressed:
             self._trigger_event(DoorbellEventType.RING)
             self.async_write_ha_state()
+        elif recovered:
+            self.async_write_ha_state()
         self._pressed = pressed
+
+    @callback
+    def _set_subscription_available(self, available: bool) -> None:
+        if available != self._attr_available:
+            self._attr_available = available
+            if not available:
+                self._pressed = False
+            self.async_write_ha_state()
+        if available:
+            if self._failure_logged:
+                _LOGGER.info("Doorbell event subscription recovered")
+            self._failure_logged = False
+        elif not self._failure_logged:
+            _LOGGER.warning("Doorbell event subscription unavailable; reconnecting")
+            self._failure_logged = True
 
     async def async_added_to_hass(self) -> None:
         """Listen for presses independently of the camera's video session."""
@@ -89,7 +116,9 @@ class VideolinkDoorbellRing(EventEntity):
         self._host.baichuan.register_callback(
             self._callback_id, self._handle_push, cmd_id=33, channel=self._channel
         )
-        self._task = asyncio.create_task(self._listen())
+        self._task = self._entry.async_create_background_task(
+            self.hass, self._listen(), "Videolink doorbell event subscription"
+        )
 
     async def _listen(self) -> None:
         """Maintain the camera's push subscription until the entity is removed."""
@@ -100,14 +129,30 @@ class VideolinkDoorbellRing(EventEntity):
                     await self._host.get_host_data()
                     self._host_ready = True
                 await self._host.baichuan.subscribe_events()
+                self._set_subscription_available(self._host.baichuan.events_active)
                 while True:
                     await asyncio.sleep(_CHECK_SECONDS)
                     await self._host.baichuan.check_subscribe_events()
+                    active = self._host.baichuan.events_active
+                    self._set_subscription_available(active)
+                    if not active:
+                        # The library retries internally and can swallow login
+                        # errors. Verify credentials through the independent CGI
+                        # client so those failures can still initiate reauth.
+                        await self._client.validate_credentials()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                _LOGGER.exception("Doorbell event subscription failed; retrying")
+            except (CredentialsInvalidError, VideolinkAuthError):
+                self._set_subscription_available(False)
+                self._entry.async_start_reauth(self.hass)
+                return
+            except (ReolinkError, VideolinkError, OSError):
+                self._set_subscription_available(False)
                 await asyncio.sleep(_RETRY_SECONDS)
+            except Exception:
+                self._set_subscription_available(False)
+                _LOGGER.exception("Unexpected doorbell subscription error")
+                return
 
     async def async_will_remove_from_hass(self) -> None:
         """Close the subscription and its authenticated camera connection."""
@@ -117,12 +162,14 @@ class VideolinkDoorbellRing(EventEntity):
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
         try:
-            await self._host.baichuan.unsubscribe_events()
-        except Exception:
-            _LOGGER.exception("Unable to unsubscribe from doorbell events")
+            async with asyncio.timeout(10):
+                await self._host.baichuan.unsubscribe_events()
+        except (ReolinkError, OSError):
+            _LOGGER.debug("Unable to unsubscribe from doorbell events")
         finally:
             try:
-                await self._host.logout()
-            except Exception:
-                _LOGGER.exception("Unable to close the doorbell event connection")
+                async with asyncio.timeout(10):
+                    await self._host.logout()
+            except (ReolinkError, OSError):
+                _LOGGER.debug("Unable to close the doorbell event connection")
         await super().async_will_remove_from_hass()

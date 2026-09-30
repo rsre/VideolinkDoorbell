@@ -18,11 +18,13 @@ def camera():
         base_url="https://camera.local",
         flv_url=AsyncMock(return_value="https://camera.local/flv?token=old"),
         rtsp_url=Mock(return_value="rtsp://camera.local/video"),
+        snapshot=AsyncMock(return_value=b"jpeg"),
     )
-    entry = SimpleNamespace(data={}, title="Front", unique_id="serial_channel_0")
+    entry = SimpleNamespace(data={}, title="Front", unique_id="serial_channel_0", async_start_reauth=Mock())
     camera = VideolinkWebCamera(entry, client, DeviceInfo("Front", "Model", "serial", "FW"))
     camera._async_register_go2rtc_sources = AsyncMock()
     camera.async_write_ha_state = Mock()
+    camera.hass = Mock()
     return camera
 
 
@@ -47,3 +49,19 @@ async def test_live_source_change_updates_existing_hls_stream(camera):
 async def test_unused_camera_does_not_refresh_urls(camera):
     await camera._async_refresh_active_source()
     camera._client.flv_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_auth_failure_starts_reauth_and_recovery_restores_availability(camera):
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.videolink_doorbell.api import VideolinkAuthError
+
+    camera._client.snapshot.side_effect = VideolinkAuthError("Invalid credentials")
+    with pytest.raises(HomeAssistantError):
+        await camera.async_camera_image()
+    assert not camera.available
+    camera._entry.async_start_reauth.assert_called_once_with(camera.hass)
+    camera._client.snapshot.side_effect = None
+    await camera.async_camera_image()
+    assert camera.available

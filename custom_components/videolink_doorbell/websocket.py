@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
-from .api import VideolinkClient
+from .api import VideolinkAuthError, VideolinkClient
 from .const import CONF_CHANNEL, DEFAULT_CHANNEL, DOMAIN
 
 COMMAND = "videolink_doorbell/native_talk"
@@ -215,6 +215,10 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
                 "done": cursor + len(chunk) >= len(frames),
                 "dropped": dropped(),
             }
+    except VideolinkAuthError:
+        entry.async_start_reauth(hass)
+        connection.send_error(msg["id"], "invalid_auth", "Camera authentication rejected")
+        return
     except (ValueError, binascii.Error) as err:
         connection.send_error(msg["id"], "invalid_format", str(err))
         return

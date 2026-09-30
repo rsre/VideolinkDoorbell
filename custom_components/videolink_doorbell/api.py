@@ -13,12 +13,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 
 _LOGGER = logging.getLogger(__name__)
 
 try:
-    from .native_talk import NativeTalkChannel
+    from .native_talk import NativeTalkAuthError, NativeTalkChannel
 except ImportError:  # Keep the standalone API test loader working.
     import importlib.util
     import sys
@@ -33,6 +33,7 @@ except ImportError:  # Keep the standalone API test loader working.
     sys.modules[_native_talk_spec.name] = _native_talk_module
     _native_talk_spec.loader.exec_module(_native_talk_module)
     NativeTalkChannel = _native_talk_module.NativeTalkChannel
+    NativeTalkAuthError = _native_talk_module.NativeTalkAuthError
 
 
 class VideolinkError(Exception):
@@ -141,6 +142,10 @@ class VideolinkClient:
             ) as response:
                 response.raise_for_status()
                 payload = await response.json(content_type=None)
+        except ClientResponseError as err:
+            if err.status in (401, 403):
+                raise VideolinkAuthError(f"{cmd} authentication rejected") from None
+            raise VideolinkConnectionError(f"{cmd} HTTP request failed ({err.status})") from None
         except (ClientError, TimeoutError, ValueError) as err:
             # aiohttp exceptions retain the request URL, including its token.
             # Neither the public error nor its traceback may expose that URL.
@@ -206,15 +211,26 @@ class VideolinkClient:
         assert self._token is not None
         return self._token
 
+    async def validate_credentials(self) -> None:
+        """Check current credentials when a second transport cannot reconnect."""
+        async with self._login_lock:
+            await self.login()
+
     async def command(
         self, cmd: str, param: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Run one authenticated CGI command, retrying once after token expiry."""
         for attempt in range(2):
             token = await self.ensure_login()
-            payload = await self._request(
-                [{"cmd": cmd, "action": 0, "param": param or {}}], token
-            )
+            try:
+                payload = await self._request(
+                    [{"cmd": cmd, "action": 0, "param": param or {}}], token
+                )
+            except VideolinkAuthError:
+                self._token = None
+                if attempt == 0:
+                    continue
+                raise
             result = payload[0]
             if result.get("code") == 0:
                 value = result.get("value", {})
@@ -264,6 +280,13 @@ class VideolinkClient:
                 ) as response:
                     response.raise_for_status()
                     data = await response.read()
+            except ClientResponseError as err:
+                if err.status in (401, 403):
+                    self._token = None
+                    if attempt == 0:
+                        continue
+                    raise VideolinkAuthError("Snapshot authentication rejected") from None
+                raise VideolinkConnectionError(f"Snapshot HTTP request failed ({err.status})") from None
             except (ClientError, TimeoutError) as err:
                 raise VideolinkConnectionError(
                     f"Snapshot request failed ({type(err).__name__})"
@@ -272,8 +295,8 @@ class VideolinkClient:
                 return data
             self._token = None
             if attempt == 1:
-                raise VideolinkAuthError("Camera did not return a JPEG snapshot")
-        raise VideolinkAuthError("Camera did not return a JPEG snapshot")
+                raise VideolinkError("Camera did not return a JPEG snapshot")
+        raise VideolinkError("Camera did not return a JPEG snapshot")
 
     async def flv_url(self, channel: int, stream: str) -> str:
         """Build the same authenticated FLV preview URL as the web console."""
@@ -352,15 +375,20 @@ class VideolinkClient:
                 )
                 try:
                     await self._native_talk.start()
-                except (Exception, asyncio.CancelledError):
+                except (Exception, asyncio.CancelledError) as err:
                     try:
                         await self._native_talk.stop()
                     finally:
                         self._native_talk = None
                         self._native_talk_owner = None
+                    if isinstance(err, NativeTalkAuthError):
+                        raise VideolinkAuthError("Native camera authentication rejected") from None
                     raise
             elif self._native_talk.failed:
-                await self._native_talk.restart()
+                try:
+                    await self._native_talk.restart()
+                except NativeTalkAuthError:
+                    raise VideolinkAuthError("Native camera authentication rejected") from None
             self._native_talk_owner = owner
             return self._native_talk.talk_config
 

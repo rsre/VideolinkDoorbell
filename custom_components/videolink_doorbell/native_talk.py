@@ -40,6 +40,10 @@ BCMEDIA_APP_HEADER_FIELD = 2  # Observed constant; its meaning is not verified.
 XML_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
 
 
+class NativeTalkAuthError(PermissionError):
+    """The camera rejected native login credentials."""
+
+
 def _xml_child_text(node: ElementTree.Element, name: str, default: str) -> str:
     """Read a child value while tolerating namespace-qualified XML."""
     for child in node.iter():
@@ -682,7 +686,7 @@ class NativeTalkSession:
             f"response={result_header.response_code} body={result_header.body_length} payload={len(result_payload)}"
         )
         if result_header.response_code != 200:
-            raise PermissionError(f"camera rejected native login: {result_header.response_code}")
+            raise NativeTalkAuthError(f"camera rejected native login: {result_header.response_code}")
         self._xml_bytes(result_payload)
         self._logged_in = True
 

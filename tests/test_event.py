@@ -49,4 +49,4 @@ def test_visitor_rising_edges_produce_rings(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert trigger.call_count == 2
     trigger.assert_any_call(DoorbellEventType.RING)
-    assert ring.async_write_ha_state.call_count == 2
+    assert ring.async_write_ha_state.call_count == 3

@@ -143,6 +143,9 @@ def boundaries(monkeypatch: pytest.MonkeyPatch):
     )
     _module(monkeypatch, "reolink_aio")
     _module(monkeypatch, "reolink_aio.api", Host=object)
+    reolink_error = type("ReolinkError", (Exception,), {})
+    _module(monkeypatch, "reolink_aio.exceptions", ReolinkError=reolink_error,
+            CredentialsInvalidError=type("CredentialsInvalidError", (reolink_error,), {}))
     _module(monkeypatch, f"{PACKAGE}.runtime", VideolinkRuntime=SimpleNamespace)
     _module(
         monkeypatch,
@@ -213,7 +216,7 @@ def test_visitor_rising_edges_produce_rings(
         ring._handle_push()
     assert trigger.call_count == 2
     trigger.assert_any_call("ring")
-    assert ring.async_write_ha_state.call_count == 2
+    assert ring.async_write_ha_state.call_count == 3
 
 
 @pytest.mark.asyncio

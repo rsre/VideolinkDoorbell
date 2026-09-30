@@ -7,12 +7,13 @@ from datetime import timedelta
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo as HADeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .api import DeviceInfo, VideolinkClient, VideolinkError
+from .api import DeviceInfo, VideolinkAuthError, VideolinkClient, VideolinkError
 from .const import (
     CONF_CHANNEL,
     CONF_RTSP_PORT,
@@ -89,7 +90,26 @@ class VideolinkWebCamera(Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         """Return the current console snapshot."""
-        return await self._client.snapshot(self._channel)
+        try:
+            image = await self._client.snapshot(self._channel)
+        except VideolinkError as err:
+            self._handle_device_error(err)
+            raise HomeAssistantError(str(err)) from None
+        self._set_available(True)
+        return image
+
+    @callback
+    def _set_available(self, available: bool) -> None:
+        if available != self._attr_available:
+            self._attr_available = available
+            if getattr(self, "hass", None) is not None:
+                self.async_write_ha_state()
+
+    @callback
+    def _handle_device_error(self, err: VideolinkError) -> None:
+        self._set_available(False)
+        if isinstance(err, VideolinkAuthError):
+            self._entry.async_start_reauth(self.hass)
 
     async def async_added_to_hass(self) -> None:
         """Keep cached tokenized sources current while this entity exists."""
@@ -110,7 +130,12 @@ class VideolinkWebCamera(Camera):
     async def _async_video_url(self) -> str:
         if self._video_source == "rtsp":
             return self._client.rtsp_url(self._channel, self._stream, self._rtsp_port)
-        return await self._client.flv_url(self._channel, self._stream)
+        try:
+            url = await self._client.flv_url(self._channel, self._stream)
+        except VideolinkError as err:
+            self._handle_device_error(err)
+            raise
+        return url
 
     async def _async_refresh_stream_source(self) -> str:
         """Update both cached HLS and WebRTC sources when the URL changes."""
@@ -139,7 +164,10 @@ class VideolinkWebCamera(Camera):
     async def stream_source(self) -> str:
         """Return the configured video source and register talkback in go2rtc."""
         previous_url = self._last_video_url
-        video_url = await self._async_refresh_stream_source()
+        try:
+            video_url = await self._async_refresh_stream_source()
+        except VideolinkError as err:
+            raise HomeAssistantError(str(err)) from None
         # A provider restart may have removed an unchanged registration.
         if video_url == previous_url:
             await self._async_register_go2rtc_sources(video_url)
