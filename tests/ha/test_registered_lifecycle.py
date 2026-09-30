@@ -1,7 +1,7 @@
 """Setup, reload, recovery and cleanup through Home Assistant's real managers."""
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+import asyncio
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,15 +11,12 @@ from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import translation
-from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
     async_fire_time_changed,
 )
 
-from custom_components import videolink_doorbell as integration
-from custom_components.videolink_doorbell import backend, config_flow, subscription
+from custom_components.videolink_doorbell import config_flow, subscription
 from custom_components.videolink_doorbell.api import (
     DeviceInfo,
     VideolinkAuthError,
@@ -29,35 +26,8 @@ from custom_components.videolink_doorbell.api import (
 from custom_components.videolink_doorbell.const import DOMAIN
 
 
-@pytest.fixture
-async def runtime(hass, enable_custom_integrations, monkeypatch):
-    loaded = await async_get_integration(hass, DOMAIN)
-    # Frontend/go2rtc services are separate integrations; preserve actual platform
-    # forwarding, registries, entry states and entity teardown in these tests.
-    monkeypatch.setattr(loaded, "dependencies", [])
-    monkeypatch.setattr(integration, "async_setup_frontend", AsyncMock())
-    client = AsyncMock(spec=VideolinkClient)
-    client.host = "camera.local"
-    client.port = 443
-    client.base_url = "https://camera.local"
-    client.device_info.return_value = DeviceInfo("Front", "Model", "serial", "FW")
-    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
-    host = SimpleNamespace(
-        get_host_data=AsyncMock(), logout=AsyncMock(), visitor_detected=Mock(return_value=False),
-        baichuan=SimpleNamespace(events_active=True, register_callback=Mock(), unregister_callback=Mock(),
-                                subscribe_events=AsyncMock(), check_subscribe_events=AsyncMock(), unsubscribe_events=AsyncMock()),
-    )
-    monkeypatch.setattr(subscription, "Host", Mock(return_value=host))
-    entry = MockConfigEntry(
-        domain=DOMAIN, title="Front", version=4, unique_id="serial_channel_0",
-        data={"host": "camera.local", "port": 443, "username": "admin", "password": "test", "verify_ssl": True},
-    )
-    entry.add_to_hass(hass)
-    return entry, client, host
-
-
-async def test_repeated_setup_reload_and_unload_preserves_entities(hass, runtime):
-    entry, client, host = runtime
+async def test_repeated_setup_reload_and_unload_preserves_entities(hass, entry_runtime):
+    entry, client, host = entry_runtime
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
@@ -77,8 +47,8 @@ async def test_repeated_setup_reload_and_unload_preserves_entities(hass, runtime
     assert host.logout.await_count == client.native_talk_stop.await_count == 3
 
 
-async def test_doorbell_name_comes_from_platform_translation(hass, runtime, monkeypatch):
-    entry, _, _ = runtime
+async def test_doorbell_name_comes_from_platform_translation(hass, entry_runtime, monkeypatch):
+    entry, _, _ = entry_runtime
     get_translations = translation.async_get_translations
 
     async def translated_name(*args, **kwargs):
@@ -103,8 +73,8 @@ async def test_doorbell_name_comes_from_platform_translation(hass, runtime, monk
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_reauth_rejects_different_camera_with_translated_abort(hass, runtime, monkeypatch):
-    entry, client, _ = runtime
+async def test_reauth_rejects_different_camera_with_translated_abort(hass, entry_runtime, monkeypatch):
+    entry, client, _ = entry_runtime
     original_data = dict(entry.data)
     client.device_info.return_value = DeviceInfo("Other", "Model", "other_serial", "FW")
     factory = Mock(return_value=client)
@@ -127,8 +97,8 @@ async def test_reauth_rejects_different_camera_with_translated_abort(hass, runti
     assert entry.state is ConfigEntryState.NOT_LOADED
 
 
-async def test_metadata_connection_failure_recovers_without_partial_entities(hass, runtime, freezer):
-    entry, client, _ = runtime
+async def test_metadata_connection_failure_recovers_without_partial_entities(hass, entry_runtime, freezer):
+    entry, client, _ = entry_runtime
     client.device_info.side_effect = VideolinkConnectionError("Offline")
     assert not await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -148,8 +118,8 @@ async def test_metadata_connection_failure_recovers_without_partial_entities(has
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_metadata_auth_failure_completes_real_reauthentication_and_reload(hass, runtime, monkeypatch):
-    entry, client, _ = runtime
+async def test_metadata_auth_failure_completes_real_reauthentication_and_reload(hass, entry_runtime, monkeypatch):
+    entry, client, _ = entry_runtime
     client.device_info.side_effect = VideolinkAuthError("Invalid credentials")
     assert not await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -172,3 +142,53 @@ async def test_metadata_auth_failure_completes_real_reauthentication_and_reload(
     assert entry.state is ConfigEntryState.LOADED
     assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 2
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_doorbell_network_loss_recovers_and_resumes_ring_events(hass, entry_runtime, monkeypatch, caplog):
+    entry, client, host = entry_runtime
+    monkeypatch.setattr(subscription, "_CHECK_SECONDS", 0)
+    monkeypatch.setattr(subscription, "_RETRY_SECONDS", 0)
+    lose_network, recovered, finish_check = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def check():
+        await lose_network.wait()
+        host.baichuan.events_active = False
+        raise OSError("Camera disconnected")
+
+    async def resubscribe():
+        if host.baichuan.subscribe_events.await_count > 1:
+            recovered.set()
+            await finish_check.wait()
+        host.baichuan.events_active = True
+
+    host.baichuan.check_subscribe_events.side_effect = check
+    host.baichuan.subscribe_events.side_effect = resubscribe
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    push = host.baichuan.register_callback.call_args.args[1]
+    entity_id = next(entity.entity_id for entity in er.async_entries_for_config_entry(
+        er.async_get(hass), entry.entry_id,
+    ) if entity.domain == "event")
+    host.visitor_detected.return_value = True
+    push()
+    first_ring = hass.states.get(entity_id).state
+    assert hass.states.get(entity_id).attributes["event_type"] == "ring"
+    lose_network.set()
+    await asyncio.wait_for(recovered.wait(), 1)
+    assert hass.states.get(entity_id).state == "unavailable"
+    # Release the successful subscription, then park subsequent health checks.
+    host.baichuan.check_subscribe_events.side_effect = asyncio.Event().wait
+    finish_check.set()
+    await hass.async_block_till_done()
+    assert entry.runtime_data.doorbell.available
+    # The outage resets the edge detector even when the last received state was
+    # pressed; the first ring after reconnection must still be delivered.
+    push()
+    assert hass.states.get(entity_id).state not in {"unavailable", first_ring}
+    assert hass.states.get(entity_id).attributes["event_type"] == "ring"
+    warnings = [record for record in caplog.records if "subscription unavailable" in record.message]
+    assert len(warnings) == 1
+    client.validate_credentials.assert_not_awaited()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    host.baichuan.unregister_callback.assert_called_once()
+    host.logout.assert_awaited_once()
