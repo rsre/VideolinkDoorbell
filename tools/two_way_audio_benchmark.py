@@ -115,6 +115,7 @@ class HomeAssistantNativeTalk:
         self.entity_id = entity_id
         self.websocket = None
         self._command_id = 0
+        self._session_token: str | None = None
 
     def _login_token(self) -> str:
         if not self.username or not self.password:
@@ -180,6 +181,10 @@ class HomeAssistantNativeTalk:
             "action": action,
             "entity_id": self.entity_id,
         }
+        if action != "start":
+            if self._session_token is None:
+                raise RuntimeError("Start a native talk session before sending commands")
+            message["token"] = self._session_token
         if pcm is not None:
             message["pcm"] = base64.b64encode(pcm).decode()
         await self.websocket.send(json.dumps(message))
@@ -189,12 +194,20 @@ class HomeAssistantNativeTalk:
                 continue
             if not response.get("success"):
                 raise RuntimeError(response.get("error", response))
+            if action == "start":
+                token = response.get("result", {}).get("token")
+                if not isinstance(token, str) or not token:
+                    raise RuntimeError("Native talk start did not return an ownership token")
+                self._session_token = token
+            elif action == "stop":
+                self._session_token = None
             return
 
     async def close(self) -> None:
         if self.websocket is not None:
             await self.websocket.close()
             self.websocket = None
+            self._session_token = None
 
 
 class MicrophonePcmCapture:
