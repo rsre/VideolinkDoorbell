@@ -773,3 +773,33 @@ async def test_native_audio_queue_discards_stale_frame(monkeypatch) -> None:
     await channel.send_pcm(b"old")
     await channel.stop()
     assert transport.sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size,offset,reads", [(0xFFFFFFFF, 0, [20]), (10, 11, [20, 4])])
+async def test_transport_rejects_invalid_lengths_before_reading_body(size, offset, reads):
+    from unittest.mock import AsyncMock, call
+
+    prefix = struct.pack("<III BBHHH", native_talk.BC_MAGIC, 202, size, 0, 0, 1, 200, native_talk.BC_CLASS_MODERN_24)
+    reader = SimpleNamespace(readexactly=AsyncMock(side_effect=[prefix, struct.pack("<I", offset)]))
+    client = native_talk.BaichuanTcpClient("camera.local")
+    client.reader = reader
+    with pytest.raises(ValueError):
+        await client.receive()
+    assert reader.readexactly.await_args_list == [call(size) for size in reads]
+
+
+@pytest.mark.asyncio
+async def test_transport_bounds_incomplete_body_reads(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    prefix = struct.pack("<III BBHHH", native_talk.BC_MAGIC, 202, 10, 0, 0, 1, 200, 0x6514)
+    async def read(size):
+        if size == 20:
+            return prefix
+        await asyncio.Event().wait()
+    client = native_talk.BaichuanTcpClient("camera.local")
+    client.reader = SimpleNamespace(readexactly=AsyncMock(side_effect=read))
+    monkeypatch.setattr(native_talk, "FRAME_READ_TIMEOUT_SECONDS", 0.01)
+    with pytest.raises(TimeoutError):
+        await client.receive()

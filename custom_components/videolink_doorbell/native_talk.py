@@ -25,6 +25,8 @@ NATIVE_TALK_PORT = 9000
 CONNECT_TIMEOUT_SECONDS = 10
 WRITE_TIMEOUT_SECONDS = 5
 CLOSE_TIMEOUT_SECONDS = 2
+MAX_NATIVE_BODY_BYTES = 1024 * 1024
+FRAME_READ_TIMEOUT_SECONDS = 10
 SAMPLE_RATE = 16_000
 SAMPLES_PER_FRAME = 1_024
 FRAME_DURATION_MS = 64
@@ -548,8 +550,13 @@ class BaichuanTcpClient:
             raise RuntimeError("Baichuan TCP client is not connected")
         prefix = await self.reader.readexactly(20)
         header = parse_baichuan_header(prefix)
-        extra = await self.reader.readexactly(4) if header.header_length == 24 else b""
-        body = await self.reader.readexactly(header.body_length)
+        if header.body_length > MAX_NATIVE_BODY_BYTES:
+            raise ValueError("Baichuan frame exceeds the native audio/control size limit")
+        async with asyncio.timeout(FRAME_READ_TIMEOUT_SECONDS):
+            extra = await self.reader.readexactly(4) if header.header_length == 24 else b""
+            if extra and struct.unpack("<I", extra)[0] > header.body_length:
+                raise ValueError("Baichuan payload offset exceeds body length")
+            body = await self.reader.readexactly(header.body_length)
         return split_baichuan_message(prefix + extra + body)
 
 
