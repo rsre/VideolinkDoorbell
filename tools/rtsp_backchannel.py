@@ -39,7 +39,7 @@ class RtspBackchannel:
 
     def connect(self) -> None:
         self.sock = socket.create_connection((self.host, self.port), timeout=5)
-        self.sock.settimeout(None)
+        self._receive_buffer.clear()
 
     def _recv_exact(self, size: int) -> bytes:
         assert self.sock is not None
@@ -65,7 +65,11 @@ class RtspBackchannel:
             # interleaved frame in _receive_buffer for the next read.
             self._receive_buffer[:0] = first
             while b"\r\n\r\n" not in self._receive_buffer:
-                self._receive_buffer.extend(self._recv_exact(4096))
+                assert self.sock is not None
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("RTSP connection closed during response headers")
+                self._receive_buffer.extend(chunk)
             separator = self._receive_buffer.index(b"\r\n\r\n")
             header_data = bytes(self._receive_buffer[:separator])
             del self._receive_buffer[:separator + 4]
