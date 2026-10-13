@@ -28,7 +28,7 @@ async def read_device():
 ```
 
 The caller owns the HTTP session. Network methods have deadlines; callers must
-stop native talk when removing a client. Stream URLs contain camera credentials
+stop native talk and call `await client.logout()` when removing a client. Stream URLs contain camera credentials
 or temporary tokens and must not be logged. Native talk uses the camera's local
 Baichuan service; it does not provide TLS authentication.
 
@@ -49,3 +49,18 @@ this avoids depending on an unpublished package. Before Core submission,
 publish the client, pin its release in the integration manifest, and replace
 bundled imports with `videolink_client` imports. Public package publication is
 not performed by building these artifacts.
+
+
+CGI requests reject redirects. `verify_ssl` applies only to CGI requests, not
+FLV URLs consumed by go2rtc/FFmpeg or RTSP/Baichuan media. JSON responses are
+limited to 1 MiB and snapshots to 8 MiB after bounded gzip/deflate decoding.
+The client bounds simultaneous snapshots to two and permits one test tone at a
+time. Native talk accepts mono PCM16 at supported rates up to 48 kHz, with even
+frames of at most 4096 samples. Native TCP does not authenticate the peer or
+protect outgoing ADPCM speech with encryption.
+
+Run the protocol type check from the repository root with:
+
+```sh
+python -m mypy --follow-imports=silent --check-untyped-defs custom_components/videolink_doorbell/videolink_client
+```

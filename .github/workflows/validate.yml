@@ -30,8 +30,12 @@ jobs:
         uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master
 
   tests:
-    name: Unit tests
+    name: Unit tests (${{ matrix.aiohttp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        aiohttp: [minimum, latest]
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -43,6 +47,13 @@ jobs:
           cache-dependency-path: requirements-test.txt
       - name: Install test dependencies
         run: python -m pip install -r requirements-test.txt
+      - name: Exercise newest supported standalone HTTP client
+        if: matrix.aiohttp == 'latest'
+        run: python -m pip install --upgrade 'aiohttp<4'
+      - name: Check protocol types
+        run: |
+          python -m pip install mypy
+          python -m mypy --follow-imports=silent --check-untyped-defs custom_components/videolink_doorbell/videolink_client
       - name: Run Python tests
         run: python -m pytest -q
       - name: Build standalone protocol package
@@ -59,8 +70,18 @@ jobs:
         run: python tools/build_frontend.py --check-bundle --output-dir frontend/dist
 
   home-assistant-tests:
-    name: Home Assistant lifecycle tests
+    name: Home Assistant lifecycle tests (${{ matrix.ha }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ha: baseline
+            reolink: managed
+          - ha: baseline
+            reolink: minimum
+          - ha: stable
+            reolink: managed
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -72,8 +93,20 @@ jobs:
           cache-dependency-path: requirements-ha-test.txt
       - name: Install Home Assistant test dependencies
         run: python -m pip install -r requirements-ha-test.txt
-      - name: Run real Home Assistant tests
-        run: python -m pytest -q tests/ha tests/test_event.py
+      - name: Update to latest stable fixture and Core
+        if: matrix.ha == 'stable'
+        run: python -m pip install --upgrade pytest-homeassistant-custom-component reolink-aio
+      - name: Exercise minimum Reolink protocol dependency
+        if: matrix.reolink == 'minimum'
+        run: python -m pip install --no-deps reolink-aio==0.21.15
+      - name: Require complete config-flow coverage
+        run: |
+          python -m pip install pytest-cov
+          python -m pytest -q tests/ha/test_config_flow.py --cov=custom_components.videolink_doorbell.config_flow --cov-branch --cov-fail-under=100
+      - name: Run real Home Assistant tests with branch coverage
+        run: |
+          python -m pip install pytest-cov
+          python -m pytest -q --cov=custom_components.videolink_doorbell --cov-branch --cov-report=term-missing --cov-fail-under=75
 
   browser-tests:
     name: Browser WebSocket lifecycle tests
@@ -99,3 +132,30 @@ jobs:
         env:
           VIDEOLINK_BROWSER_TESTS: "1"
         run: python -m pytest -q tests/ha/test_browser_lifecycle.py
+
+  dependency-advisories:
+    name: Dependency advisories
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+      - run: python -m pip install pip-audit
+      - run: pip-audit -r requirements-test.txt
+
+  core-development:
+    name: Development Core compatibility
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+      - run: |
+          python -m pip install -r requirements-ha-test.txt
+          python -m pip install --upgrade --pre pytest-homeassistant-custom-component reolink-aio
+          python -m pip install --upgrade 'homeassistant @ git+https://github.com/home-assistant/core.git@dev'
+      - run: python -m pytest -q tests/ha tests/test_event.py

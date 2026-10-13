@@ -2,6 +2,22 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [Unreleased]
+
+- Address audit F01–F11: block CGI redirects, validate setup hardware identity,
+  recover revoked stream tokens and camera availability, release microphones
+  immediately, retain native session identities, and recover displaced owners.
+- Bound decoded HTTP responses, native frame reads, audio formats, encoded PCM,
+  concurrent tones, snapshots, and raw capture frame counts.
+- Default new CGI configurations to verified TLS, label its scope explicitly,
+  retain form settings on errors, and release temporary/runtime CGI sessions.
+- Update the standalone client to 0.1.1 and aiohttp minimum to 3.14.3; bundle card
+  0.12.58 with lifecycle fixes and disabled RTSP controls for failed providers.
+- Add real TLS/TCP/browser regressions, complete config-flow coverage, protocol
+  type checking, stable/development Core CI, minimum dependency coverage, and
+  scheduled advisory checks. Document transport limits, hardware validation,
+  removal, channel zero, and browser AEC; make legacy tools configurable.
+
 ## [0.12.56] - 2026-10-01
 
 ### Fixed

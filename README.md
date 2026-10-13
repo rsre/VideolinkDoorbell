@@ -21,14 +21,14 @@ There's two options for 2 way audio:
 3. Go to **Settings → Devices & services → Add integration** and search for **Videolink Doorbell**.
 4. Enter the camera host and the credentials used by its web console.
 
-For cameras with their factory/self-signed certificate, leave **Verify HTTPS certificate** disabled.
+For a trusted camera certificate, enable **Verify CGI HTTPS certificate** (the default for new setups). For a factory/self-signed certificate, explicitly disable it. Existing entries retain their setting. This setting covers CGI login, commands, and snapshots only.
 
 Select `main` for the console's Clear stream or `sub` for Fluent.
 
 RTSP must be enabled for the `rtsp` talk mode. The `native` talk mode uses the
 camera's Baichuan service on TCP port 9000; video continues to use FLV.
 
-Connection, credential, channel, stream, and certificate settings can be updated
+Connection, credential, stream, and CGI certificate settings can be updated
 from the integration's **Reconfigure** action. Authentication failures prompt for
 replacement credentials without requiring the integration to be removed.
 
@@ -88,8 +88,7 @@ for backend installations that omit automatic card installation.
 - In native mode, incoming audio uses the decoded camera-microphone channel of
   the Baichuan mix when playable frames arrive. The card falls back to the
   WebRTC camera-audio track if native mix is unavailable, silent at startup, or
-  stops. The app's proprietary AEC is not used; see [AEC.md](AEC.md) for the
-  echo cancellation decision and browser measurement.
+  stops. The app's proprietary AEC is not used.
 - `video_fit` controls the video layout (default is `contain`):
   - `contain` scales the entire frame with letterboxing,
   - `cover` crops it,
@@ -357,3 +356,50 @@ redacts the host, credentials, camera name and serial number. Tokens,
 authenticated URLs, raw captures and audio are excluded. Downloads make no
 device requests and do not start disabled entities' lazy services; they also
 work before successful setup and after unload.
+
+
+### Transport security and recovery
+
+CGI requests reject redirects and enforce the selected CGI certificate policy.
+FLV is fetched independently by go2rtc or FFmpeg/HLS: in go2rtc 1.9.14, IP
+HTTPS sources skip certificate verification and hostname sources use normal
+verification. The CGI setting cannot override either media provider's TLS policy.
+Use a trusted hostname certificate and configure the media provider separately
+when authenticated media transport is required. A self-signed hostname may fail
+in go2rtc even with CGI verification disabled. HLS/FFmpeg has its own TLS settings.
+There is currently no integration-owned media proxy or certificate pinning.
+
+Native Baichuan talk uses raw TCP with camera digest/AES-CFB framing, without
+TLS peer authentication or a message authentication tag. Outgoing ADPCM speech
+is unencrypted even when its XML extension is encrypted. RTSP/RTP talk also uses
+unencrypted transport. CGI verification does not protect either talk path; use
+a trusted isolated network or an authenticated secure relay where supported.
+
+Enabled cameras with a resolved stream or failed source receive a bounded CGI
+health check every 30 seconds. This validates cached tokens after camera reboot
+without unconditional logins. A successful check/source restores availability;
+RTSP URL construction alone does not establish health. Snapshots share that same
+camera reachability state. Disabled/unused cameras do not initiate checks.
+
+### Supported hardware and removal
+
+New configurations use channel zero; the UI does not expose channel selection.
+The automated suite uses simulated camera responses, Home Assistant 2026.9.1,
+and browser media peers. No model/firmware combination has been validated on
+physical hardware by this audit. Hardware and acoustic compatibility must be
+confirmed on the intended camera before relying on talkback.
+
+To remove the integration, delete its entry in Settings → Devices & services,
+remove its cards from dashboards, and uninstall it through HACS. After deleting
+the final entry, remove the Videolink JavaScript resource from Settings →
+Dashboards → Resources (enable advanced mode), then restart Home Assistant.
+The resource is shared across entries and is not automatically deleted.
+
+For a future Core distribution, publish the standalone protocol package and
+replace vendored imports only after that release is available. Keep the HACS
+card/resource installer out of the Core distribution. The package includes
+`py.typed`; it does not yet claim complete strict typing.
+
+Reconfigure forms retain non-secret settings after errors. Leave the password
+blank to keep the stored credential; enter a replacement to change it. Initial
+setup and reauthentication require the password to be entered explicitly.
