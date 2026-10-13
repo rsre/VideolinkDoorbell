@@ -68,6 +68,7 @@ async def test_local_account_login_exchanges_and_revokes_token(monkeypatch) -> N
     calls = []
 
     class Response:
+        status = 200
         def __init__(self, payload):
             self.payload = payload
 
@@ -93,7 +94,8 @@ async def test_local_account_login_exchanges_and_revokes_token(monkeypatch) -> N
         async def __aexit__(self, *args):
             await self.connector.close()
 
-        def post(self, url, *, json=None, data=None):
+        def post(self, url, *, json=None, data=None, allow_redirects=False):
+            assert allow_redirects is False
             calls.append((url, json, data))
             if url.endswith("/auth/login_flow"):
                 return Response({"type": "form", "flow_id": "flow-1"})

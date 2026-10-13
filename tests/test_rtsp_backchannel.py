@@ -46,7 +46,7 @@ def test_handshake_preserves_connection_timeout_until_play(monkeypatch):
     channel._request = Mock(side_effect=request)
     channel.open()
     connect.assert_called_once_with(("camera.local", 554), timeout=5)
-    sock.settimeout.assert_called_once_with(None)
+    sock.settimeout.assert_called_once_with(5)
 
 
 def test_closed_peer_during_header_is_reported():
@@ -55,3 +55,25 @@ def test_closed_peer_during_header_is_reported():
     channel.sock.recv.side_effect = [b"RTSP/1.0 200", b""]
     with pytest.raises(ConnectionError, match="headers"):
         channel._read_response()
+
+@pytest.mark.parametrize("response", [
+    b"RTSP/1.0 200 OK\r\nContent-Length: 1000000000\r\n\r\n",
+    b"RTSP/1.0 200 OK\r\n" + b"X" * 65536,
+])
+def test_response_allocation_limits(response):
+    channel = client()
+    channel.sock = Mock()
+    channel.sock.recv.return_value = response
+    with pytest.raises(ValueError, match="size limit"):
+        channel._read_response()
+
+
+def test_response_deadline_is_absolute(monkeypatch):
+    channel = client()
+    channel.sock = Mock()
+    channel.sock.recv.return_value = b"R"
+    times = iter([0, 1, 6])
+    with monkeypatch.context() as patch:
+        patch.setattr(rtsp.time, "monotonic", lambda: next(times))
+        with pytest.raises(TimeoutError, match="deadline"):
+            channel._read_response()

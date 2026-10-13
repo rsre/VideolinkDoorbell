@@ -24,21 +24,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "custom_components" / "videolink_doorbell"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-CAMERA_HOST = "192.168.1.40"
+CAMERA_HOST = os.environ.get("VIDEOLINK_HOST", "")
 CAMERA_PORT = 554
 CAMERA_USERNAME = os.environ.get("VIDEOLINK_USERNAME", "admin")
 CAMERA_PASSWORD = os.environ.get("VIDEOLINK_PASSWORD", "")
 CAMERA_CHANNEL = 0
 CAMERA_STREAM = "main"
-GO2RTC_URL = "http://ha.rsanzr.com:11984"
-GO2RTC_STREAM = "videolink_doorbell_141484745042827_channel_0"
+GO2RTC_URL = os.environ.get("VIDEOLINK_GO2RTC_URL", "")
+GO2RTC_STREAM = os.environ.get("VIDEOLINK_GO2RTC_STREAM", "")
 GO2RTC_USERNAME = os.environ.get("VIDEOLINK_GO2RTC_USERNAME", "admin")
 GO2RTC_PASSWORD = os.environ.get("VIDEOLINK_GO2RTC_PASSWORD", "")
-AUDIO_URL = "https://ha.rsanzr.com/local/tone_440hz_16khz.wav"
-HA_URL = "https://ha.rsanzr.com"
+AUDIO_URL = os.environ.get("VIDEOLINK_AUDIO_URL", "")
+HA_URL = os.environ.get("VIDEOLINK_HA_URL", "")
 HA_USERNAME = os.environ.get("VIDEOLINK_HA_USERNAME", "")
 HA_PASSWORD = os.environ.get("VIDEOLINK_HA_PASSWORD", "")
-HA_ENTITY_ID = "camera.porton"
+HA_ENTITY_ID = os.environ.get("VIDEOLINK_HA_ENTITY", "")
 TONE_SECONDS = 2.0
 OBSERVE_SECONDS = 5.0
 PTT_SECONDS = 5.0
@@ -125,6 +125,7 @@ class HomeAssistantNativeTalk:
         client_id = self.base_url + "/"
         response = requests.post(
             f"{self.base_url}/auth/login_flow",
+            allow_redirects=False,
             json={
                 "handler": ["homeassistant", None],
                 "client_id": client_id,
@@ -132,10 +133,13 @@ class HomeAssistantNativeTalk:
             },
             timeout=15,
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("Home Assistant authentication redirects are not allowed")
         response.raise_for_status()
         flow = response.json()
         response = requests.post(
             f"{self.base_url}/auth/login_flow/{flow['flow_id']}",
+            allow_redirects=False,
             json={
                 "client_id": client_id,
                 "username": self.username,
@@ -143,10 +147,13 @@ class HomeAssistantNativeTalk:
             },
             timeout=15,
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("Home Assistant authentication redirects are not allowed")
         response.raise_for_status()
         code = response.json()["result"]
         response = requests.post(
             f"{self.base_url}/auth/token",
+            allow_redirects=False,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -154,6 +161,8 @@ class HomeAssistantNativeTalk:
             },
             timeout=15,
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("Home Assistant authentication redirects are not allowed")
         response.raise_for_status()
         return response.json()["access_token"]
 
@@ -369,7 +378,8 @@ def _post_go2rtc_tone(
         raise RuntimeError("audio file is empty")
     source = f"ffmpeg:{audio_url}#audio=pcmu"
     response = session.post(
-        f"{base_url.rstrip('/')}/api/streams",
+                f"{base_url.rstrip('/')}/api/streams",
+        allow_redirects=False,
         params={"dst": stream, "src": source},
         timeout=20,
     )
@@ -381,7 +391,8 @@ def _stop_go2rtc_tone(
 ) -> None:
     auth = HTTPBasicAuth(username, password) if username and password else None
     response = requests.post(
-        f"{base_url.rstrip('/')}/api/streams",
+            f"{base_url.rstrip('/')}/api/streams",
+        allow_redirects=False,
         params={"dst": stream, "src": ""},
         auth=auth,
         timeout=20,
@@ -521,6 +532,8 @@ async def _run_copied_test(runs: int) -> None:
 
 
 async def benchmark(args: argparse.Namespace) -> int:
+    if not CAMERA_HOST:
+        raise ValueError("Set VIDEOLINK_HOST before running this benchmark")
     username = CAMERA_USERNAME
     password = CAMERA_PASSWORD
     user = urllib.parse.quote(username, safe="")
@@ -698,7 +711,7 @@ def main() -> int:
     try:
         return asyncio.run(benchmark(args))
     except Exception as err:  # noqa: BLE001 - CLI reports failures without a traceback
-        print(f"benchmark failed: {type(err).__name__}: {err}", file=sys.stderr)
+        print(f"benchmark failed: {type(err).__name__}", file=sys.stderr)
         return 1
 
 

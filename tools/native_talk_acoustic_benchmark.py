@@ -103,12 +103,15 @@ class HomeAssistantNativeTone:
         ) as session:
             async with session.post(
                 f"{self.base_url}/auth/login_flow",
+                allow_redirects=False,
                 json={
                     "handler": ["homeassistant", None],
                     "client_id": client_id,
                     "redirect_uri": client_id,
                 },
             ) as response:
+                if 300 <= response.status < 400:
+                    raise RuntimeError("HTTP redirects are not allowed")
                 response.raise_for_status()
                 flow = await response.json()
             flow_id = flow.get("flow_id")
@@ -116,12 +119,15 @@ class HomeAssistantNativeTone:
                 raise RuntimeError("Home Assistant local-account login is unavailable")
             async with session.post(
                 f"{self.base_url}/auth/login_flow/{flow_id}",
+                allow_redirects=False,
                 json={
                     "client_id": client_id,
                     "username": self.username,
                     "password": self.password,
                 },
             ) as response:
+                if 300 <= response.status < 400:
+                    raise RuntimeError("HTTP redirects are not allowed")
                 response.raise_for_status()
                 result = await response.json()
             code = result.get("result")
@@ -132,12 +138,15 @@ class HomeAssistantNativeTone:
                 )
             async with session.post(
                 f"{self.base_url}/auth/token",
+                allow_redirects=False,
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
                     "client_id": client_id,
                 },
             ) as response:
+                if 300 <= response.status < 400:
+                    raise RuntimeError("HTTP redirects are not allowed")
                 response.raise_for_status()
                 tokens = await response.json()
         access = tokens.get("access_token")
@@ -155,8 +164,11 @@ class HomeAssistantNativeTone:
                 timeout=ClientTimeout(total=10),
                 connector=TCPConnector(resolver=ThreadedResolver()),
             ) as session, session.post(
-                f"{self.base_url}/auth/revoke", data={"token": token}
+                f"{self.base_url}/auth/revoke", data={"token": token},
+                allow_redirects=False,
             ) as response:
+                if 300 <= response.status < 400:
+                    raise RuntimeError("HTTP redirects are not allowed")
                 response.raise_for_status()
         except Exception:  # noqa: BLE001 - warn if best-effort token revocation fails
             print("Warning: could not revoke the temporary Home Assistant login", file=sys.stderr)
@@ -515,7 +527,7 @@ async def _run_trial(
             )
     except Exception as err:  # noqa: BLE001 - record any trial failure in the report
         result["status"] = "error"
-        result["error"] = f"{type(err).__name__}: {err}"
+        result["error"] = f"{type(err).__name__}"
     finally:
         client.mix_tone_sent_at = None
         stop.set()
@@ -647,7 +659,7 @@ def main() -> int:
     try:
         return asyncio.run(benchmark(args))
     except Exception as err:  # noqa: BLE001 - CLI reports failures without a traceback
-        print(f"benchmark failed: {type(err).__name__}: {err}", file=sys.stderr)
+        print(f"benchmark failed: {type(err).__name__}", file=sys.stderr)
         return 1
 
 

@@ -25,6 +25,7 @@ class RtspBackchannel:
         self.password = password
         self.sock: socket.socket | None = None
         self._receive_buffer = bytearray()
+        self._read_deadline = None
         self.cseq = 1
         self.session: str | None = None
         self.auth_type: str | None = None
@@ -41,10 +42,20 @@ class RtspBackchannel:
         self.sock = socket.create_connection((self.host, self.port), timeout=5)
         self._receive_buffer.clear()
 
+    def _recv(self, size: int) -> bytes:
+        assert self.sock is not None
+        remaining = (self._read_deadline - time.monotonic()) if self._read_deadline else 5
+        if remaining <= 0:
+            raise TimeoutError("RTSP response deadline exceeded")
+        self.sock.settimeout(remaining)
+        return self.sock.recv(size)
+
     def _recv_exact(self, size: int) -> bytes:
+        if not 0 <= size <= 1024 * 1024:
+            raise ValueError("RTSP body exceeds size limit")
         assert self.sock is not None
         while len(self._receive_buffer) < size:
-            chunk = self.sock.recv(max(4096, size - len(self._receive_buffer)))
+            chunk = self._recv(max(4096, size - len(self._receive_buffer)))
             if not chunk:
                 raise ConnectionError("RTSP connection closed")
             self._receive_buffer.extend(chunk)
@@ -53,6 +64,7 @@ class RtspBackchannel:
         return data
 
     def _read_response(self) -> tuple[int, dict[str, str], bytes]:
+        self._read_deadline = time.monotonic() + 5
         while True:
             first = self._recv_exact(1)
             if first == b"$":
@@ -66,10 +78,12 @@ class RtspBackchannel:
             self._receive_buffer[:0] = first
             while b"\r\n\r\n" not in self._receive_buffer:
                 assert self.sock is not None
-                chunk = self.sock.recv(4096)
+                chunk = self._recv(4096)
                 if not chunk:
                     raise ConnectionError("RTSP connection closed during response headers")
                 self._receive_buffer.extend(chunk)
+                if len(self._receive_buffer) > 65536:
+                    raise ValueError("RTSP headers exceed size limit")
             separator = self._receive_buffer.index(b"\r\n\r\n")
             header_data = bytes(self._receive_buffer[:separator])
             del self._receive_buffer[:separator + 4]
@@ -172,7 +186,7 @@ class RtspBackchannel:
         # Handshake timeouts protect the benchmark from a stalled camera;
         # streaming itself must remain blocking while RTP is sent.
         assert self.sock is not None
-        self.sock.settimeout(None)
+        self.sock.settimeout(5)
 
     def describe(self) -> str:
         """Fetch the camera SDP, including its ONVIF backchannel tracks."""
