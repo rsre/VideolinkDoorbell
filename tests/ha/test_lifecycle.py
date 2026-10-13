@@ -34,7 +34,7 @@ def make_entry():
 async def test_unload_continues_after_native_device_error():
     entry = make_entry()
     entry.runtime_data = VideolinkRuntime(
-        SimpleNamespace(native_talk_stop=AsyncMock(side_effect=TimeoutError)), None, None, entry
+        SimpleNamespace(logout=AsyncMock(), native_talk_stop=AsyncMock(side_effect=TimeoutError)), None, None, entry
     )
     unload = AsyncMock(return_value=True)
     hass = SimpleNamespace(config_entries=SimpleNamespace(async_unload_platforms=unload))
@@ -49,7 +49,7 @@ async def test_unload_continues_after_native_device_error():
     (VideolinkError(), ConfigEntryNotReady),
 ])
 async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error, expected):
-    client = SimpleNamespace(device_info=AsyncMock(side_effect=error))
+    client = SimpleNamespace(host="camera.local", logout=AsyncMock(), device_info=AsyncMock(side_effect=error))
     monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     forward = AsyncMock()
@@ -63,15 +63,32 @@ async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error,
 
 
 @pytest.mark.asyncio
-async def test_setup_stores_metadata_before_forwarding(monkeypatch):
-    info = DeviceInfo("Front", "Model", "serial", "Firmware")
-    client = SimpleNamespace(device_info=AsyncMock(return_value=info))
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_setup_stores_metadata_before_forwarding(monkeypatch, legacy):
+    info = DeviceInfo("Front", "Model", "" if legacy else "serial", "Firmware")
+    client = SimpleNamespace(host="camera.local", logout=AsyncMock(), device_info=AsyncMock(return_value=info))
     monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     entry = make_entry()
+    if legacy:
+        object.__setattr__(entry, "unique_id", "camera.local:443_channel_0")
     async def forward(actual_entry, platforms):
         assert actual_entry.runtime_data.client is client
         assert actual_entry.runtime_data.device_info is info
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
                            config_entries=SimpleNamespace(async_forward_entry_setups=forward))
     assert await backend.async_setup_entry(hass, entry)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serial", ["different", ""])
+async def test_setup_rejects_missing_or_changed_identity(monkeypatch, serial):
+    client = SimpleNamespace(host="camera.local", logout=AsyncMock(),
+        device_info=AsyncMock(return_value=DeviceInfo("Front", "Model", serial, "FW")))
+    monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
+    monkeypatch.setattr(backend, "async_get_clientsession", Mock())
+    forward = AsyncMock()
+    hass = SimpleNamespace(config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+    with pytest.raises(ConfigEntryNotReady, match="identity"):
+        await backend.async_setup_entry(hass, make_entry())
+    forward.assert_not_awaited()
+    client.logout.assert_awaited_once()

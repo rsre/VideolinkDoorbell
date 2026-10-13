@@ -180,7 +180,7 @@ class VideolinkRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         # Resource-specific cancellation and deadlines remain inside each close
         # operation; this boundary also guards native cleanup and faulty resources.
-        cleanups = [*reversed(self._cleanups), self.client.native_talk_stop]
+        cleanups = [*reversed(self._cleanups), self.client.native_talk_stop, self.client.logout]
         self._cleanups.clear()
         for cleanup in cleanups:
             try:

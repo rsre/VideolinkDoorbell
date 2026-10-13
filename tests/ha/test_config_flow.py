@@ -99,3 +99,129 @@ async def test_malformed_url_shows_actionable_flow_error(configured_flow, monkey
         "host": "http://[", "port": 443, "username": "admin", "password": "test", "verify_ssl": True,
     })
     assert result["errors"] == {"base": "invalid_host"}
+
+@pytest.mark.parametrize("failure,error", [
+    ("VideolinkInvalidHostError", "invalid_host"),
+    ("VideolinkAuthError", "invalid_auth"),
+    ("VideolinkConnectionError", "cannot_connect"),
+    ("VideolinkError", "unknown"),
+])
+@pytest.mark.parametrize("step", ["user", "reconfigure", "reauth"])
+async def test_real_flow_manager_validation_errors(hass, entry_runtime, monkeypatch, failure, error, step):
+    from custom_components.videolink_doorbell import api, config_flow
+    entry, client, _ = entry_runtime
+    factory = Mock(return_value=client)
+    factory._normalize_host = api.VideolinkClient._normalize_host
+    monkeypatch.setattr(config_flow, "VideolinkClient", factory)
+    client.device_info.side_effect = getattr(api, failure)("dummy error")
+    context = {"source": step}
+    if step != "user":
+        context["entry_id"] = entry.entry_id
+    result = await hass.config_entries.flow.async_init("videolink_doorbell", context=context,
+        data=dict(entry.data) if step == "reauth" else None)
+    values = {"host": "changed.local", "username": "admin", "password": "dummy", "stream": "main",
+        "advanced": {"port": 443, "rtsp_port": 554, "video_source": "flv", "verify_ssl": True}}
+    if step == "reauth":
+        values = {"username": "admin", "password": "dummy"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input=values)
+    assert result["errors"] == {"base": error}
+    client.logout.assert_awaited_once()
+
+
+async def test_real_flow_manager_initial_creation(hass, entry_runtime, monkeypatch):
+    from custom_components.videolink_doorbell import api, config_flow
+    _, client, _ = entry_runtime
+    client.device_info.return_value = DeviceInfo("New camera", "Model", "new-serial", "FW")
+    factory = Mock(return_value=client)
+    factory._normalize_host = api.VideolinkClient._normalize_host
+    monkeypatch.setattr(config_flow, "VideolinkClient", factory)
+    monkeypatch.setattr(hass.config_entries, "async_setup", AsyncMock(return_value=True))
+    result = await hass.config_entries.flow.async_init("videolink_doorbell", context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={
+        "host": "new.local", "username": "admin", "password": "dummy", "stream": "main",
+        "advanced": {"port": 443, "rtsp_port": 554, "video_source": "flv", "verify_ssl": True}})
+    assert result["type"] == "create_entry"
+    assert result["result"].unique_id == "new-serial_channel_0"
+    client.logout.assert_awaited_once()
+
+@pytest.fixture
+async def manager_client(entry_runtime, monkeypatch):
+    from custom_components.videolink_doorbell import api, config_flow
+    entry, client, _ = entry_runtime
+    factory = Mock(return_value=client)
+    factory._normalize_host = api.VideolinkClient._normalize_host
+    monkeypatch.setattr(config_flow, "VideolinkClient", factory)
+    return entry, client
+
+
+def form_values(host="camera.local", source="flv"):
+    return {"host": host, "username": "admin", "password": "test", "stream": "main",
+        "advanced": {"port": 443, "rtsp_port": 554, "video_source": source, "verify_ssl": True}}
+
+
+@pytest.mark.parametrize("serial,host,reason", [
+    ("serial", "new.local", "already_configured"),
+    ("different", "camera.local", "already_configured"),
+    ("", "new.local", "missing_identity"),
+])
+async def test_manager_initial_identity_and_duplicates(hass, manager_client, serial, host, reason):
+    _, client = manager_client
+    client.device_info.return_value = DeviceInfo("Front", "Model", serial, "FW")
+    result = await hass.config_entries.flow.async_init("videolink_doorbell", context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input=form_values(host))
+    if reason == "missing_identity":
+        assert result["errors"] == {"base": reason}
+    else:
+        assert result["reason"] == reason
+
+
+async def test_manager_source_only_reconfigure_avoids_login(hass, manager_client):
+    entry, client = manager_client
+    hass.config_entries.async_update_entry(entry, data={**entry.data,
+        "stream": "main", "rtsp_port": 554, "video_source": "flv", "channel": 0})
+    result = await hass.config_entries.flow.async_init("videolink_doorbell",
+        context={"source": "reconfigure", "entry_id": entry.entry_id})
+    values = form_values(source="rtsp")
+    values["password"] = ""
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input=values)
+    assert result["reason"] == "reconfigure_successful"
+    client.device_info.assert_not_awaited()
+    assert entry.data["video_source"] == "rtsp"
+
+
+@pytest.mark.parametrize("step", ["reconfigure", "reauth"])
+@pytest.mark.parametrize("serial", ["", "different"])
+async def test_manager_existing_identity_failures(hass, manager_client, step, serial):
+    entry, client = manager_client
+    client.device_info.return_value = DeviceInfo("Front", "Model", serial, "FW")
+    result = await hass.config_entries.flow.async_init("videolink_doorbell",
+        context={"source": step, "entry_id": entry.entry_id},
+        data=dict(entry.data) if step == "reauth" else None)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"],
+        user_input=form_values("new.local") if step == "reconfigure" else {"username": "admin", "password": "new"})
+    if not serial:
+        assert result["errors"] == {"base": "missing_identity"}
+    else:
+        assert result["reason"] == "wrong_device"
+
+
+@pytest.mark.parametrize("step", ["reconfigure", "reauth"])
+async def test_manager_successful_identity_preserving_update(hass, manager_client, monkeypatch, step):
+    entry, client = manager_client
+    monkeypatch.setattr(hass.config_entries, "async_reload", AsyncMock(return_value=True))
+    result = await hass.config_entries.flow.async_init("videolink_doorbell",
+        context={"source": step, "entry_id": entry.entry_id},
+        data=dict(entry.data) if step == "reauth" else None)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"],
+        user_input=form_values("new.local") if step == "reconfigure" else {"username": "admin", "password": "new"})
+    assert result["reason"] == f"{step}_successful"
+    assert entry.unique_id == "serial_channel_0"
+    client.logout.assert_awaited_once()
+
+async def test_manager_legacy_reconfigure_cannot_change_address(hass, manager_client):
+    entry, _ = manager_client
+    hass.config_entries.async_update_entry(entry, unique_id="camera.local:443_channel_0")
+    result = await hass.config_entries.flow.async_init("videolink_doorbell",
+        context={"source": "reconfigure", "entry_id": entry.entry_id})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input=form_values("new.local"))
+    assert result["reason"] == "wrong_device"

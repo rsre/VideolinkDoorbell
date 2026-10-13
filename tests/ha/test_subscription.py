@@ -60,7 +60,7 @@ async def test_subscription_is_lazy_shared_and_reconnects_after_last_consumer(mo
     monkeypatch.setattr(subscription, "Host", factory)
     entry = SimpleNamespace(data={"username": "admin", "password": "test"}, entry_id="entry",
                             async_create_background_task=lambda hass, coro, name: asyncio.create_task(coro))
-    client = SimpleNamespace(host="camera.local", port=443, native_talk_stop=AsyncMock())
+    client = SimpleNamespace(host="camera.local", port=443, logout=AsyncMock(), native_talk_stop=AsyncMock())
     runtime = VideolinkRuntime(client, None, Mock(), entry)
     service = runtime.doorbell
     factory.assert_not_called()

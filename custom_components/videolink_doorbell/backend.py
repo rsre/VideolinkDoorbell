@@ -53,11 +53,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
     try:
         info = await client.device_info()
     except VideolinkAuthError as err:
+        await client.logout()
         raise ConfigEntryAuthFailed from err
     except VideolinkConnectionError as err:
+        await client.logout()
         raise ConfigEntryNotReady from err
     except VideolinkError as err:
+        await client.logout()
         raise ConfigEntryNotReady("Camera returned invalid device information") from err
+    channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
+    legacy_id = f"{client.host}:{entry.data[CONF_PORT]}_channel_{channel}"
+    if entry.unique_id != legacy_id and (
+        not info.serial or entry.unique_id != f"{info.serial}_channel_{channel}"
+    ):
+        await client.logout()
+        raise ConfigEntryNotReady("Camera identity changed or is missing; restore the original camera or add the replacement as a new integration")
     runtime = entry.runtime_data = VideolinkRuntime(client, info, hass, entry)
     runtime.async_initialize()
     entry.async_on_unload(entry.add_update_listener(runtime.async_config_entry_updated))

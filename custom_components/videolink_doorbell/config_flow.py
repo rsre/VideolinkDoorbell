@@ -28,7 +28,6 @@ from .const import (
     DEFAULT_CHANNEL,
     DEFAULT_RTSP_PORT,
     DEFAULT_STREAM,
-    DEFAULT_VERIFY_SSL,
     DEFAULT_VIDEO_SOURCE,
     DOMAIN,
     STREAMS,
@@ -52,7 +51,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_PORT: values.get(CONF_PORT, 443),
             CONF_VIDEO_SOURCE: values.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE),
             CONF_RTSP_PORT: values.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
-            CONF_VERIFY_SSL: values.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+            CONF_VERIFY_SSL: values.get(CONF_VERIFY_SSL, True),
         }
         return vol.Schema(
             {
@@ -116,7 +115,10 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             port=user_input[CONF_PORT],
             verify_ssl=user_input[CONF_VERIFY_SSL],
         )
-        return await client.device_info()
+        try:
+            return await client.device_info()
+        finally:
+            await client.logout()
 
     @staticmethod
     def _unique_id(info: DeviceInfo, user_input: dict[str, Any]) -> str:
@@ -186,7 +188,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=info.name, data=user_input)
 
         return self.async_show_form(
-            step_id="user", data_schema=self._schema(), errors=errors
+            step_id="user", data_schema=self._schema({k: v for k, v in (user_input or {}).items() if k != CONF_PASSWORD}), errors=errors
         )
 
     async def async_step_reconfigure(
@@ -197,6 +199,10 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             user_input = self._flatten_advanced(user_input)
+            # A blank reconfigure password preserves the stored credential;
+            # do not echo saved or submitted secrets back into the form.
+            if not user_input.get(CONF_PASSWORD):
+                user_input.pop(CONF_PASSWORD, None)
             updated = {**entry.data, **user_input}
             source_only = (
                 updated.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
@@ -233,7 +239,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=self._schema(dict(entry.data)),
+            data_schema=self._schema({k: v for k, v in {**entry.data, **(user_input or {})}.items() if k != CONF_PASSWORD}),
             errors=errors,
         )
 

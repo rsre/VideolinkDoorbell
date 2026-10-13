@@ -30,7 +30,7 @@
               "port": "HTTPS port",
               "video_source": "Video source",
               "rtsp_port": "RTSP backchannel port",
-              "verify_ssl": "Verify HTTPS certificate"
+              "verify_ssl": "Verify CGI HTTPS certificate"
             }
           }
         }
@@ -51,7 +51,7 @@
               "port": "HTTPS port",
               "video_source": "Video source",
               "rtsp_port": "RTSP backchannel port",
-              "verify_ssl": "Verify HTTPS certificate"
+              "verify_ssl": "Verify CGI HTTPS certificate"
             }
           }
         }

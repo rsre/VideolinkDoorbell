@@ -36,7 +36,7 @@ def entry():
 @pytest.mark.parametrize("with_services", [False, True])
 async def test_diagnostics_are_redacted_and_do_not_contact_device(hass, entry, with_services):
     client = SimpleNamespace(
-        native_talk_stop=AsyncMock(),
+        logout=AsyncMock(), native_talk_stop=AsyncMock(),
         native_talk_mix_diagnostics=Mock(return_value={"token": "private-native-token"}),
         native_talk_set_raw_callback=Mock(),
         rtsp_url=Mock(return_value="rtsp://private-stream-token@private-camera.local"),
