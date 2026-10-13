@@ -255,7 +255,7 @@ async def test_second_card_takeover_rejects_old_audio_and_old_cleanup_preserves_
           return 'unexpected success';
         } catch (error) { return error.code; }
     }""", [runtime.camera, old_token])
-    assert result == "native_talk_failed"
+    assert result == "session_lost"
     assert not first.frames and second.active
     await remove(first_page)
     assert second.active

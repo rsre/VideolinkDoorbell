@@ -180,7 +180,8 @@ async def websocket_native_talk(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "invalid_format", str(err))
         return
     except Exception as err:  # noqa: BLE001 - report device failures through WebSocket
-        connection.send_error(msg["id"], "native_talk_failed", str(err))
+        code = "session_lost" if "no longer active" in str(err) or "another card" in str(err) else "native_talk_failed"
+        connection.send_error(msg["id"], code, str(err))
         return
     connection.send_result(msg["id"], result)
 

@@ -473,3 +473,81 @@ test("native browser queue counts frames dropped during WebSocket stalls", () =>
   assert.equal(card._diagnostics.nativeBrowserDroppedFrames, 1);
   assert.equal(card._nativePendingSends.size, 2);
 });
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+test("native microphone release does not wait for an audio acknowledgement", async () => {
+  const card = new CardUnderTest();
+  const ack = deferred();
+  let stopped = false;
+  card._config = { talk_mode: "native" };
+  card._micStream = { getTracks: () => [{ stop: () => { stopped = true; } }] };
+  card._nativeTalking = true;
+  card._nativePendingSends.add(ack.promise);
+  const cleanup = card._stopMicrophone();
+  assert.equal(stopped, true);
+  await cleanup;
+  assert.equal(card._nativeTalking, false);
+  ack.resolve();
+});
+
+for (const phase of ["start", "subscribe"]) {
+  test(`native camera change during ${phase} releases the original camera`, async () => {
+    const card = new CardUnderTest();
+    const pending = deferred();
+    const messages = [];
+    card._config = { entity: "camera.a", talk_mode: "native" };
+    card._hass = {
+      callWS: async (msg) => {
+        messages.push(msg);
+        if (msg.action === "start") {
+          if (phase === "start") await pending.promise;
+          return { token: "owner-a" };
+        }
+      },
+      connection: { subscribeMessage: async (_handler, msg) => {
+        messages.push(msg);
+        if (phase === "subscribe") await pending.promise;
+        return () => undefined;
+      } },
+    };
+    const startup = card._ensureNativeTalkSession();
+    await Promise.resolve();
+    card._config = { entity: "camera.b", talk_mode: "native" };
+    const cleanup = card._stopNativeTalkSession();
+    pending.resolve();
+    await Promise.all([startup, cleanup]);
+    assert.ok(messages.some((msg) => msg.action === "stop" && msg.entity_id === "camera.a" && msg.token === "owner-a"));
+    assert.ok(messages.every((msg) => msg.entity_id === "camera.a"));
+    assert.equal(card._nativeSessionReady, false);
+  });
+}
+
+test("displaced native capture invalidates readiness and can explicitly reacquire", async () => {
+  const card = new CardUnderTest();
+  card._config = { entity: "camera.a", talk_mode: "native" };
+  card._setStatus = () => undefined;
+  card._hass = {
+    callWS: async (msg) => {
+      if (msg.action === "audio") throw { message: "Native talk session is no longer active" };
+      return { token: "new-owner" };
+    },
+    connection: { subscribeMessage: async () => () => undefined },
+  };
+  card._nativeSession = { entity: "camera.a", hass: card._hass, token: "old-owner" };
+  card._nativeToken = "old-owner";
+  card._nativeSessionReady = true;
+  card._nativeTalking = true;
+  card._handleNativePcm(new ArrayBuffer(2048));
+  await Promise.allSettled([...card._nativePendingSends]);
+  assert.equal(card._nativeSessionReady, false);
+  assert.equal(card._nativeTalking, false);
+  assert.equal(card._nativeSessionLost, true);
+  await card._ensureNativeTalkSession();
+  assert.equal(card._nativeSessionReady, true);
+  assert.equal(card._nativeToken, "new-owner");
+});
