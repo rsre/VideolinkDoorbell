@@ -200,6 +200,14 @@ class TalkConfig:
     sound_track: str = "mono"
     version: str = "1.1"
 
+    def validate(self) -> None:
+        """Accept only formats supported by the mono PCM16/ADPCM sender."""
+        if (self.sample_rate not in (8000, 16000, 22050, 24000, 32000, 44100, 48000)
+            or self.sample_precision != 16 or self.sound_track != "mono"
+            or not 2 <= self.length_per_encoder <= 4096
+            or self.length_per_encoder % 2):
+            raise ValueError("Camera returned an unsupported audio format")
+
     def to_xml(self) -> bytes:
         """Serialize the TalkConfig body used by MSG_ID_TALK_CONFIG."""
         values = (
@@ -398,12 +406,16 @@ def make_aes_key(password: str, nonce: str) -> bytes:
 
 def aes_cfb_encrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
     """Encrypt XML using AES-128-CFB, matching the public reference client."""
+    from types import ModuleType
+
+    modes: ModuleType
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
         try:
             from cryptography.hazmat.decrepit.ciphers import modes
         except ImportError:  # pragma: no cover - older cryptography
-            from cryptography.hazmat.primitives.ciphers import modes
+            from cryptography.hazmat.primitives.ciphers import modes as primitive_modes
+            modes = primitive_modes
     except ImportError as err:  # pragma: no cover - depends on HA runtime
         raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
     if len(key) != 16 or len(iv) != 16:
@@ -413,12 +425,16 @@ def aes_cfb_encrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") ->
 
 def aes_cfb_decrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
     """Decrypt XML using AES-128-CFB, matching the public reference client."""
+    from types import ModuleType
+
+    modes: ModuleType
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
         try:
             from cryptography.hazmat.decrepit.ciphers import modes
         except ImportError:  # pragma: no cover - older cryptography
-            from cryptography.hazmat.primitives.ciphers import modes
+            from cryptography.hazmat.primitives.ciphers import modes as primitive_modes
+            modes = primitive_modes
     except ImportError as err:  # pragma: no cover - depends on HA runtime
         raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
     if len(key) != 16 or len(iv) != 16:
@@ -548,11 +564,11 @@ class BaichuanTcpClient:
         """Read one complete framed Baichuan message."""
         if self.reader is None:
             raise RuntimeError("Baichuan TCP client is not connected")
-        prefix = await self.reader.readexactly(20)
-        header = parse_baichuan_header(prefix)
-        if header.body_length > MAX_NATIVE_BODY_BYTES:
-            raise ValueError("Baichuan frame exceeds the native audio/control size limit")
         async with asyncio.timeout(FRAME_READ_TIMEOUT_SECONDS):
+            prefix = await self.reader.readexactly(20)
+            header = parse_baichuan_header(prefix)
+            if header.body_length > MAX_NATIVE_BODY_BYTES:
+                raise ValueError("Baichuan frame exceeds the native audio/control size limit")
             extra = await self.reader.readexactly(4) if header.header_length == 24 else b""
             if extra and struct.unpack("<I", extra)[0] > header.body_length:
                 raise ValueError("Baichuan payload offset exceeds body length")
@@ -724,6 +740,7 @@ class NativeTalkSession:
 
     async def open_talk(self, config: TalkConfig) -> None:
         """Reproduce the SDK AudioTalkOpen request and acknowledgement flow."""
+        config.validate()
         if not self._logged_in:
             raise RuntimeError("native talk session is not authenticated")
         # Channel.talkOpen() passes the selected BC_TALK_CONFIG directly to
@@ -759,6 +776,7 @@ class NativeTalkSession:
                 await self.close()
                 await self.login()
                 config = (await self.talk_ability()).to_config(self.channel)
+                config.validate()
                 await self.client.send(
                     serialize_talk_config_message(
                         config,
@@ -890,13 +908,13 @@ class NativeTalkSession:
         while True:
             if self._mix_reader_error is not None:
                 raise RuntimeError(f"native mix reader stopped: {self._mix_reader_error}")
-            response = await asyncio.wait_for(
+            queued_response = await asyncio.wait_for(
                 self._response_queue.get(), max(0, deadline - asyncio.get_running_loop().time())
             )
-            if response is None:
+            if queued_response is None:
                 raise RuntimeError(f"native mix reader stopped: {self._mix_reader_error}")
-            if expected_id is None or response[0].message_id == expected_id:
-                return response
+            if expected_id is None or queued_response[0].message_id == expected_id:
+                return queued_response
 
     async def talk_ability(self) -> TalkAbility:
         """Read and select the camera's native ADPCM talk profile."""

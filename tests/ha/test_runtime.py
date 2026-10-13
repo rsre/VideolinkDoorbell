@@ -15,7 +15,7 @@ from custom_components.videolink_doorbell.runtime import VideolinkRuntime
 
 @pytest.fixture
 def runtime():
-    client = SimpleNamespace(native_talk_start=AsyncMock(), native_talk_stop=AsyncMock())
+    client = SimpleNamespace(native_talk_start=AsyncMock(), logout=AsyncMock(), native_talk_stop=AsyncMock())
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())))
     entry = SimpleNamespace(async_create_background_task=lambda hass, coro, name: asyncio.create_task(coro))
     return VideolinkRuntime(client, None, hass, entry)
@@ -94,3 +94,12 @@ async def test_runtime_capture_is_owner_checked_and_cleared_on_stop_and_close(ru
     await runtime.async_close()
     with pytest.raises(ValueError):
         runtime.capture_chunk("owner", 0)
+
+@pytest.mark.parametrize("samples", [0, 1000000000, 1024])
+def test_oversized_encoded_pcm_is_rejected_before_decoding(monkeypatch, samples):
+    from custom_components.videolink_doorbell import websocket
+    decoder = Mock()
+    monkeypatch.setattr(websocket.base64, "b64decode", decoder)
+    with pytest.raises(ValueError, match="exceeds"):
+        websocket._decode_pcm("A" * 12000, samples)
+    decoder.assert_not_called()

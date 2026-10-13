@@ -7,6 +7,7 @@ import sys
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from aiohttp import ClientResponseError, RequestInfo
@@ -25,6 +26,16 @@ async def test_http_errors_do_not_expose_tokens(snapshot: bool) -> None:
     request = RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url)
 
     class Response:
+        headers: ClassVar[dict] = {}
+        status = 200
+
+        @property
+        def content(self):
+            return self
+
+        async def iter_chunked(self, _size):
+            yield await self.read()
+
         async def __aenter__(self):
             return self
 
@@ -51,6 +62,16 @@ async def test_http_errors_do_not_expose_tokens(snapshot: bool) -> None:
 @pytest.mark.asyncio
 async def test_invalid_snapshot_is_not_a_credentials_error():
     class Response:
+        headers: ClassVar[dict] = {}
+        status = 200
+
+        @property
+        def content(self):
+            return self
+
+        async def iter_chunked(self, _size):
+            yield await self.read()
+
         async def __aenter__(self):
             return self
 
@@ -138,6 +159,16 @@ async def test_concurrent_token_requests_share_one_login() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_retries_a_rejected_token() -> None:
     class Response:
+        headers: ClassVar[dict] = {}
+        status = 200
+
+        @property
+        def content(self):
+            return self
+
+        async def iter_chunked(self, _size):
+            yield await self.read()
+
         def __init__(self, data: bytes) -> None:
             self.data = data
 

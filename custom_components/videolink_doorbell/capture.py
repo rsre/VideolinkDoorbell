@@ -67,7 +67,7 @@ class NativeCaptureStore:
         if capture is None:
             return
         size = len(extension) + len(payload) + 64 + len(decrypted_prefix or b"")
-        if capture.size + size > self._max_bytes:
+        if capture.size + size > self._max_bytes or len(capture.frames) >= 8192:
             capture.dropped += 1
             return
         capture.frames.append(CapturedFrame(time.time_ns(), header, extension, payload, decrypted_prefix))

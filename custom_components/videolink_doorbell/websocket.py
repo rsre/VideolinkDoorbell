@@ -197,6 +197,8 @@ def _remove_start_cleanup(connection, token: str) -> None:
 def _decode_pcm(encoded: str | None, samples_per_frame: int) -> bytes:
     if not encoded:
         raise ValueError("pcm is required for audio messages")
+    if not 2 <= samples_per_frame <= 4096 or len(encoded) > 4 * ((samples_per_frame * 2 + 2) // 3):
+        raise ValueError("pcm exceeds the negotiated frame size")
     try:
         pcm = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as err:

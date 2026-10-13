@@ -855,3 +855,29 @@ async def test_transport_bounds_incomplete_body_reads(monkeypatch):
     monkeypatch.setattr(native_talk, "FRAME_READ_TIMEOUT_SECONDS", 0.01)
     with pytest.raises(TimeoutError):
         await client.receive()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [b"", b"\xf0"])
+async def test_receive_deadline_includes_silent_and_partial_headers(monkeypatch, partial):
+    monkeypatch.setattr(native_talk, "FRAME_READ_TIMEOUT_SECONDS", 0.01)
+    client = native_talk.BaichuanTcpClient("camera.local")
+    client.reader = asyncio.StreamReader()
+    client.reader.feed_data(partial)
+    with pytest.raises(TimeoutError):
+        await client.receive()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"sample_rate": 10**9}, {"sample_rate": -1}, {"sample_precision": 8},
+    {"sound_track": "stereo"}, {"length_per_encoder": 3},
+    {"length_per_encoder": -2}, {"length_per_encoder": 1000000},
+])
+async def test_invalid_profile_rejected_before_camera_configuration(changes):
+    from unittest.mock import AsyncMock
+    session = native_talk.NativeTalkSession("camera.local", "user", "password")
+    session._logged_in = True
+    session.client.send = AsyncMock()
+    with pytest.raises(ValueError, match="unsupported audio"):
+        await session.open_talk(native_talk.TalkConfig(**changes))
+    session.client.send.assert_not_awaited()

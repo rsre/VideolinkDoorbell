@@ -5,6 +5,7 @@ import sys
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from aiohttp import ClientResponseError, RequestInfo
@@ -19,7 +20,10 @@ DEVICE = [{"code": 0, "value": {"DevInfo": {"name": "Front", "model": "Model", "
 
 
 class Response:
+    headers: ClassVar[dict] = {}
+
     def __init__(self, payload=None, *, status=200, failure=None, raw_json=None):
+        self.content = self
         self.payload = payload
         self.status = status
         self.failure = failure
@@ -36,6 +40,12 @@ class Response:
             url = URL("https://camera.local/cgi-bin/api.cgi?token=old-secret-token")
             request = RequestInfo(url, "POST", CIMultiDictProxy(CIMultiDict()), url)
             raise ClientResponseError(request, (), status=self.status)
+
+    async def iter_chunked(self, _size):
+        if self.failure:
+            raise self.failure
+        yield (self.payload if isinstance(self.payload, bytes) else
+               (self.raw_json.encode() if self.raw_json is not None else json.dumps(self.payload).encode()))
 
     async def json(self, **_kwargs):
         if self.failure:
@@ -161,3 +171,43 @@ async def test_timeout_is_connection_failure_and_next_request_recovers(snapshot)
         assert await client.snapshot(0) == success
     else:
         assert (await client.device_info()).serial == "serial"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+@pytest.mark.parametrize("snapshot", [False, True])
+async def test_redirects_are_rejected_without_following(status, snapshot):
+    client = client_for(Response(status=status))
+    with pytest.raises(api.VideolinkConnectionError, match="redirects"):
+        await (client.snapshot(0) if snapshot else client.login())
+    assert client._session.calls[0]["allow_redirects"] is False
+    assert len(client._session.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot", [False, True])
+async def test_decoded_http_response_limit(snapshot):
+    client = client_for(Response(b"\xff\xd8" + bytes(100) if snapshot else DEVICE))
+    client.MAX_JSON_BYTES = client.MAX_SNAPSHOT_BYTES = 10
+    with pytest.raises(api.VideolinkError, match="size limit"):
+        await (client.snapshot(0) if snapshot else client.device_info())
+
+@pytest.mark.asyncio
+async def test_logout_clears_token_and_does_not_close_shared_session():
+    client = client_for(Response([{"code": 0}]))
+    await client.logout()
+    assert client._token is None
+    assert client._session.calls[0]["params"]["cmd"] == "Logout"
+    assert client._session.calls[0]["params"]["token"] == "old-secret-token"
+    await client.logout()
+    assert len(client._session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tone_is_rejected_without_starting_another_session():
+    from unittest.mock import AsyncMock
+    client = client_for()
+    client.native_talk_start = AsyncMock()
+    async with client._tone_lock:
+        with pytest.raises(api.VideolinkError, match="already running"):
+            await client.native_talk_tone(0)
+    client.native_talk_start.assert_not_awaited()

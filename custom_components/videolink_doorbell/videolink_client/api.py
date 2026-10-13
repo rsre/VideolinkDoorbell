@@ -3,21 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import secrets
 import struct
 import time
+import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
+from aiohttp import (
+    ClientError,
+    ClientResponse,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-from .native_talk import NativeTalkAuthError, NativeTalkChannel
+from .native_talk import (
+    BaichuanHeader,
+    NativeMixFrame,
+    NativeTalkAuthError,
+    NativeTalkChannel,
+    TalkConfig,
+)
 
 
 class VideolinkError(Exception):
@@ -50,6 +65,33 @@ class VideolinkClient:
     """Client matching the camera web console's token-based CGI API."""
 
     _TIMEOUT = ClientTimeout(total=15)
+    MAX_JSON_BYTES = 1024 * 1024
+    MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+
+    @staticmethod
+    async def _read_limited(response: ClientResponse, limit: int) -> bytes:
+        """Bound decoded response bytes, including compressed HTTP bodies."""
+        encoding = response.headers.get("Content-Encoding", "identity").lower()
+        if encoding not in ("identity", "gzip", "deflate"):
+            raise VideolinkError("Camera returned an unsupported content encoding")
+        decoder = None if encoding == "identity" else zlib.decompressobj(
+            zlib.MAX_WBITS | (16 if encoding == "gzip" else 0)
+        )
+        data = bytearray()
+        try:
+            async for chunk in response.content.iter_chunked(65536):
+                if decoder is not None:
+                    # max_length caps expansion before allocation, even for a
+                    # highly compressed response in a single network chunk.
+                    chunk = decoder.decompress(chunk, limit - len(data) + 1)
+                if len(data) + len(chunk) > limit:
+                    raise VideolinkError("Camera response exceeds size limit")
+                data.extend(chunk)
+            if decoder is not None and (not decoder.eof or decoder.unused_data):
+                raise VideolinkError("Camera returned invalid compressed data")
+        except zlib.error:
+            raise VideolinkError("Camera returned invalid compressed data") from None
+        return bytes(data)
 
     def __init__(
         self,
@@ -73,7 +115,19 @@ class VideolinkClient:
         self._login_lock = asyncio.Lock()
         self._native_talk: NativeTalkChannel | None = None
         self._native_talk_lock = asyncio.Lock()
+        self._tone_lock = asyncio.Lock()
+        self._snapshot_lock = asyncio.Semaphore(2)
         self._native_talk_owner: str | None = None
+
+    async def logout(self) -> None:
+        """Release this client's CGI token without closing the shared session."""
+        token, self._token = self._token, None
+        if token is not None:
+            try:
+                async with asyncio.timeout(5):
+                    await self._request([{"cmd": "Logout", "action": 0, "param": {}}], token)
+            except (VideolinkError, TimeoutError):
+                _LOGGER.debug("CGI logout did not complete")
 
     @staticmethod
     def _normalize_host(host: str) -> str:
@@ -129,9 +183,13 @@ class VideolinkClient:
                 json=commands,
                 ssl=self.verify_ssl,
                 timeout=self._TIMEOUT,
+                allow_redirects=False,
+                auto_decompress=False,
             ) as response:
                 response.raise_for_status()
-                payload = await response.json(content_type=None)
+                if 300 <= response.status < 400:
+                    raise VideolinkConnectionError("Camera CGI redirects are not allowed")
+                payload = json.loads(await self._read_limited(response, self.MAX_JSON_BYTES))
         except ClientResponseError as err:
             if err.status in (401, 403):
                 raise VideolinkAuthError(f"{cmd} authentication rejected") from None
@@ -244,9 +302,9 @@ class VideolinkClient:
         value = await self.command("GetDevInfo")
         info = value.get("DevInfo", value)
         if not isinstance(info, dict) or any(
-            not isinstance(value, str)
+            not isinstance(field_value, str)
             for key in ("name", "model", "serial", "firmVer")
-            if (value := info.get(key)) is not None
+            if (field_value := info.get(key)) is not None
         ):
             raise VideolinkError("Camera returned invalid device information")
         return DeviceInfo(
@@ -258,6 +316,10 @@ class VideolinkClient:
 
     async def snapshot(self, channel: int) -> bytes:
         """Fetch a JPEG through the console's authenticated Snap endpoint."""
+        async with self._snapshot_lock:
+            return await self._snapshot(channel)
+
+    async def _snapshot(self, channel: int) -> bytes:
         for attempt in range(2):
             token = await self.ensure_login()
             params = {
@@ -272,9 +334,13 @@ class VideolinkClient:
                     params=params,
                     ssl=self.verify_ssl,
                     timeout=self._TIMEOUT,
+                    allow_redirects=False,
+                    auto_decompress=False,
                 ) as response:
                     response.raise_for_status()
-                    data = await response.read()
+                    if 300 <= response.status < 400:
+                        raise VideolinkConnectionError("Camera snapshot redirects are not allowed")
+                    data = await self._read_limited(response, self.MAX_SNAPSHOT_BYTES)
             except ClientResponseError as err:
                 if err.status in (401, 403):
                     self._token = None
@@ -341,8 +407,8 @@ class VideolinkClient:
         owner: str | None = None,
         require_owner: bool = False,
         take_over: bool = False,
-        mix_frame_callback=None,
-    ):
+        mix_frame_callback: Callable[[NativeMixFrame], None] | None = None,
+    ) -> TalkConfig:
         """Open and configure the experimental native Baichuan talk path."""
         async with self._native_talk_lock:
             if require_owner and (owner is None or self._native_talk_owner != owner):
@@ -384,6 +450,7 @@ class VideolinkClient:
                 except NativeTalkAuthError:
                     raise VideolinkAuthError("Native camera authentication rejected") from None
             self._native_talk_owner = owner
+            assert self._native_talk.talk_config is not None
             return self._native_talk.talk_config
 
     async def native_talk_audio(self, pcm16le: bytes, *, wait: bool = True, owner: str | None = None) -> None:
@@ -412,13 +479,23 @@ class VideolinkClient:
 
     async def native_talk_tone(self, channel: int, *, seconds: float = 2.0, owner: str | None = None) -> None:
         """Generate and send a test tone without browser audio/WebSocket frames."""
+        if not math.isfinite(seconds) or not 0 < seconds <= 10:
+            raise VideolinkError("Tone duration must be between zero and ten seconds")
+        if self._tone_lock.locked():
+            raise VideolinkError("A test tone is already running")
+        async with self._tone_lock:
+            await self._native_talk_tone(channel, seconds=seconds, owner=owner)
+
+    async def _native_talk_tone(self, channel: int, *, seconds: float, owner: str | None) -> None:
         await self.native_talk_start(
             channel, owner=owner, require_owner=owner is not None
         )
         if self._native_talk is None or self._native_talk.talk_config is None:
             raise VideolinkConnectionError("Native talk session is not active")
-        channel = self._native_talk
-        config = channel.talk_config
+        talk = self._native_talk
+        config = talk.talk_config
+        assert config is not None
+        config.validate()
         total_samples = int(seconds * config.sample_rate)
         frame_size = config.length_per_encoder
         samples = [
@@ -433,12 +510,12 @@ class VideolinkClient:
                 f"<{frame_size}h", *samples[offset : offset + frame_size]
             )
             await asyncio.sleep(max(0.0, deadline - time.perf_counter()))
-            await channel.send_pcm(pcm)
+            await talk.send_pcm(pcm)
             deadline += frame_size / config.sample_rate
         # Keep talk open while the camera plays its buffered audio.
         await asyncio.sleep(3.0)
 
-    async def native_talk_set_mix_callback(self, callback, *, owner: str | None = None) -> None:
+    async def native_talk_set_mix_callback(self, callback: Callable[[NativeMixFrame], None] | None, *, owner: str | None = None) -> None:
         """Set the consumer for validated native mix audio."""
         if self._native_talk_owner != owner:
             raise VideolinkError("Native talk belongs to another card")
@@ -446,7 +523,7 @@ class VideolinkClient:
             raise VideolinkConnectionError("Native talk session is not active")
         self._native_talk.set_mix_callback(callback)
 
-    def native_talk_set_raw_callback(self, callback, *, owner: str) -> None:
+    def native_talk_set_raw_callback(self, callback: Callable[[BaichuanHeader, bytes, bytes], None] | None, *, owner: str) -> None:
         """Observe native receive frames for an explicitly opted-in owner."""
         if self._native_talk_owner != owner or self._native_talk is None:
             raise VideolinkConnectionError("Native talk session is no longer active")
