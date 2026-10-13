@@ -19,6 +19,7 @@ def camera():
         base_url="https://camera.local",
         flv_url=AsyncMock(return_value="https://camera.local/flv?token=old"),
         rtsp_url=Mock(return_value="rtsp://camera.local/video"),
+        device_info=AsyncMock(return_value=DeviceInfo("Front", "Model", "serial", "FW")),
         snapshot=AsyncMock(return_value=b"jpeg"),
         rtsp_backchannel_url=Mock(return_value="rtsp://camera.local/backchannel"),
     )
@@ -165,3 +166,17 @@ async def test_camera_removal_cancels_inflight_source_requests(camera):
     await camera._sources.async_detach(camera)
     assert request.cancelled()
     assert camera._sources._url is None
+
+@pytest.mark.asyncio
+async def test_failed_initial_source_recovers_on_health_interval(camera):
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.videolink_doorbell.api import VideolinkConnectionError
+    camera._client.flv_url.side_effect = VideolinkConnectionError("offline")
+    with pytest.raises(HomeAssistantError):
+        await camera.stream_source()
+    assert not camera.available
+    camera._client.flv_url.side_effect = None
+    await camera._sources.async_refresh_active()
+    assert camera.available
+    camera._client.snapshot.assert_not_awaited()

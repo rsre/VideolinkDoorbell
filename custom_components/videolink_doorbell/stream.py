@@ -129,6 +129,7 @@ class VideolinkStreams:
             generation = self._generation
             try:
                 if self._source == "rtsp":
+                    await self._runtime.client.device_info()
                     url = self._runtime.client.rtsp_url(self._channel, self._stream, self._rtsp_port)
                 else:
                     url = await self._runtime.client.flv_url(self._channel, self._stream)
@@ -138,17 +139,21 @@ class VideolinkStreams:
                 raise
             if self._runtime.closing or generation != self._generation:
                 raise VideolinkConnectionError("Videolink camera is being removed")
+            camera._set_available(True)
             if url != self._url:
                 self._url = url
                 camera.async_update_stream_source(url)
             # Only the legacy adapter writes here. Modern Core discovers both
             # sources through the camera API and performs its own registration.
+            old_backchannel = self._registration.backchannel_available
             await self._registration.async_ensure(camera, url, self.backchannel_url)
+            if old_backchannel != self._registration.backchannel_available:
+                camera.async_write_ha_state()
             return url
 
     async def async_refresh_active(self, _now=None) -> None:
         camera = self._camera
-        if camera is None or self._url is None or self._source != "flv":
+        if camera is None or (self._url is None and camera.available):
             return
         await self._async_refresh(camera)
 
@@ -159,11 +164,16 @@ class VideolinkStreams:
         try:
             old_url = self._url
             try:
+                # Validate the cached CGI token without logging in every interval.
+                # Auth revocation after reboot triggers command()'s single retry.
+                await self._runtime.client.device_info()
                 url = await self.async_source(camera)
                 if url != old_url or self._provider_dirty:
                     self._provider_dirty = True
                     self._provider_dirty = not await self._registration.async_refresh_provider(camera)
-            except (VideolinkError, HomeAssistantError, ClientError, TimeoutError):
+            except (VideolinkError, HomeAssistantError, ClientError, TimeoutError) as err:
+                if isinstance(err, VideolinkError):
+                    camera.async_handle_device_error(err)
                 _LOGGER.debug("Camera source refresh failed; retrying at the next interval")
         finally:
             self._updates.discard(task)

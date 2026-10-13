@@ -78,6 +78,11 @@ class Go2RtcRegistration:
         self._lock = asyncio.Lock()
         self._failed = False
 
+    @property
+    def backchannel_available(self) -> bool:
+        """Whether the discovered provider can register the RTSP talk source."""
+        return not self._failed
+
     async def async_ensure(self, camera, video_url: str, backchannel_url: str) -> None:
         """Modern Core owns all writes; older Core needs a matching composite."""
         if supports_multiple_sources():
@@ -98,7 +103,7 @@ class Go2RtcRegistration:
                 current = {producer.url for producer in streams[identifier].producers} if identifier in streams else set()
                 if not {oriented, backchannel_url}.issubset(current):
                     await streams_api.add(identifier, [oriented, backchannel_url, f"ffmpeg:{identifier}#audio=opus"])
-            except (ClientError, HomeAssistantError, TimeoutError) as err:
+            except (ClientError, HomeAssistantError, TimeoutError, AttributeError, TypeError) as err:
                 self._report_failure(type(err).__name__)
                 return
             self._failed = False

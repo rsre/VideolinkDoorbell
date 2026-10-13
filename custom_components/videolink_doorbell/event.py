@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# Push subscriptions perform no platform polling.
+PARALLEL_UPDATES = 0
+
 from typing import ClassVar
 
 from homeassistant.components.event import (

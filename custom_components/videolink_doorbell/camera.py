@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+# On-demand I/O is bounded by the client snapshot semaphore and stream lock.
+PARALLEL_UPDATES = 0
+
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -51,6 +57,11 @@ class VideolinkWebCamera(Camera):
             configuration_url=self._client.base_url,
         )
 
+    @property
+    def extra_state_attributes(self) -> dict[str, bool]:
+        """Disable RTSP talk when the compatibility adapter reports failure."""
+        return {"rtsp_talk_available": self._sources._registration.backchannel_available}
+
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
@@ -67,6 +78,7 @@ class VideolinkWebCamera(Camera):
     def _set_available(self, available: bool) -> None:
         if available != self._attr_available:
             self._attr_available = available
+            _LOGGER.info("Videolink camera %s", "recovered" if available else "unavailable")
             if getattr(self, "hass", None) is not None:
                 self.async_write_ha_state()
 

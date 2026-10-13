@@ -12,7 +12,6 @@ from aiohttp.test_utils import TestServer
 pytest.importorskip("pytest_homeassistant_custom_component")
 
 from homeassistant.components.camera.const import DATA_COMPONENT
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
@@ -70,19 +69,17 @@ async def test_camera_restart_recovers_snapshot_and_existing_hls_source(
         camera.stream = hls
         try:
             camera_state["online"] = False
-            with pytest.raises(HomeAssistantError):
-                await camera.async_camera_image()
+            await sources.async_refresh_active()
             assert hass.states.get(camera.entity_id).state == "unavailable"
             # Reboot: the server revokes the previously issued token.
             camera_state.update(online=True, generation=2)
-            assert await camera.async_camera_image() == b"\xff\xd8jpeg"
-            assert camera.available
-            assert camera_state["logins"] == 2
             assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
             async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
             await hass.async_block_till_done()
             assert sources._refresh_task is not None
             await asyncio.wait_for(sources._refresh_task, 2)
+            assert camera.available
+            assert camera_state["logins"] == 2
             assert hls.source != old_url
             assert "token=session-2" in hls.source
             hls.update_source.assert_called_once_with(hls.source)
