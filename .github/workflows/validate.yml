@@ -109,7 +109,7 @@ jobs:
           python -m pytest -q --cov=custom_components.videolink_doorbell --cov-branch --cov-report=term-missing --cov-fail-under=75
 
   browser-tests:
-    name: Browser WebSocket lifecycle tests
+    name: Browser lifecycle and dashboard layout tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -131,7 +131,7 @@ jobs:
       - name: Run card against the Home Assistant WebSocket server
         env:
           VIDEOLINK_BROWSER_TESTS: "1"
-        run: python -m pytest -q tests/ha/test_browser_lifecycle.py
+        run: python -m pytest -q tests/ha/test_browser_lifecycle.py tests/ha/test_browser_layout.py
 
   dependency-advisories:
     name: Dependency advisories

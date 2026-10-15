@@ -2,6 +2,18 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.58] - 2026-10-15
+
+- Use automatic video card height in Sections dashboards so video and controls
+  do not overlap the following section, including full-height 4:3 streams.
+  Preserve the compact audio-only layout and explicit dashboard row overrides.
+- Bundle dashboard card 0.12.59 and refresh the HACS resource cache version.
+- Add Chromium geometry regressions using the shipped Home Assistant dashboard
+  at mobile and desktop widths, with 16:9 and 4:3 streams in scaled and full
+  modes. Verify that the old fixed-row layout fails these checks.
+- Run dashboard layout checks alongside browser lifecycle tests in CI and
+  document how to run them locally.
+
 ## [0.12.57] - 2026-10-13
 
 - Block CGI redirects, validate setup hardware identity,

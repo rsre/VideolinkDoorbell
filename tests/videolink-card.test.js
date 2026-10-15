@@ -146,6 +146,21 @@ test("native playback unlocks on push-to-talk gesture while temporarily muted", 
   }
 });
 
+test("video cards use content height in Sections grids", () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  for (const card_style of [undefined, "default", "video"]) {
+    card.setConfig({ entity: "camera.front_door", card_style });
+    assert.deepEqual(card.getGridOptions(), {
+      rows: "auto", columns: 12, min_rows: 3, min_columns: 6,
+    });
+  }
+  card.setConfig({ entity: "camera.front_door", card_style: "audio" });
+  assert.deepEqual(card.getGridOptions(), {
+    rows: 2, columns: 12, min_rows: 1, min_columns: 4,
+  });
+});
+
 test("card style selects compact audio-only behavior", () => {
   const card = new CardUnderTest();
   card._render = () => undefined;

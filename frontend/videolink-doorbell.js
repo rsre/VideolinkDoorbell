@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.58";
+const CARD_VERSION = "0.12.59";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -199,9 +199,10 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   getGridOptions() {
+    // Video height follows the stream aspect ratio; fixed rows can overlap the next section.
     return this._audioOnly
       ? { rows: 2, columns: 12, min_rows: 1, min_columns: 4 }
-      : { rows: 5, columns: 12, min_rows: 3, min_columns: 6 };
+      : { rows: "auto", columns: 12, min_rows: 3, min_columns: 6 };
   }
 
   connectedCallback() {

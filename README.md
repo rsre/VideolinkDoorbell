@@ -293,8 +293,12 @@ loss, reconnect, interrupted subscriptions and competing card ownership.
 .venv-ha/bin/python -m playwright install chromium
 npm ci --prefix tests/browser
 npm run build --prefix tests/browser
-VIDEOLINK_BROWSER_TESTS=1 .venv-ha/bin/python -m pytest -q tests/ha/test_browser_lifecycle.py
+VIDEOLINK_BROWSER_TESTS=1 .venv-ha/bin/python -m pytest -q tests/ha/test_browser_lifecycle.py tests/ha/test_browser_layout.py
 ```
+
+The layout suite opens the shipped Home Assistant Sections dashboard and checks
+that 16:9 and 4:3 video, controls, and the following section do not overlap at
+mobile and desktop widths, including after the stream dimensions change.
 
 The browser tests are skipped in ordinary Python runs and run in a dedicated CI
 job. On Linux, use `playwright install --with-deps chromium` for system libraries.

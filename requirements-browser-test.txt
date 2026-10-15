@@ -1,2 +1,5 @@
 -r requirements-ha-test.txt
 playwright==1.63.0
+
+# Shipped dashboard assets matching the baseline Home Assistant Core.
+home-assistant-frontend==20260826.6

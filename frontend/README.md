@@ -52,3 +52,11 @@ node --test tests/videolink-card.test.js
 Synchronization updates the vendored HACS file and the installer's cache
 version. CI verifies that both match the independent frontend source. The
 frontend version can change independently of the backend's manifest version.
+
+## Sections layout
+
+Video cards use automatic row height so the complete stream and controls fit
+before the next section, including streams with a 4:3 aspect ratio. Audio-only
+cards keep their compact two-row layout. An explicit `grid_options.rows` value
+in a dashboard overrides the default; use `rows: auto` if a fixed value clips
+or overlaps the content.
