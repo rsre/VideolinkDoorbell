@@ -16,8 +16,20 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
+from typing import Any
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
+
+# Imported at module level so the native AES path does not lazily import a
+# heavy native extension on the Home Assistant event loop. The import executor
+# loads this module, so the cipher objects are ready before any session runs.
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+
+_aes_modes: Any
+try:  # cryptography 48 moved CFB modes into the decrepit namespace
+    from cryptography.hazmat.decrepit.ciphers import modes as _aes_modes
+except ImportError:  # pragma: no cover - older cryptography
+    from cryptography.hazmat.primitives.ciphers import modes as _aes_modes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -406,40 +418,16 @@ def make_aes_key(password: str, nonce: str) -> bytes:
 
 def aes_cfb_encrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
     """Encrypt XML using AES-128-CFB, matching the public reference client."""
-    from types import ModuleType
-
-    modes: ModuleType
-    try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
-        try:
-            from cryptography.hazmat.decrepit.ciphers import modes
-        except ImportError:  # pragma: no cover - older cryptography
-            from cryptography.hazmat.primitives.ciphers import modes as primitive_modes
-            modes = primitive_modes
-    except ImportError as err:  # pragma: no cover - depends on HA runtime
-        raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
     if len(key) != 16 or len(iv) != 16:
         raise ValueError("AES-CFB requires 16-byte key and IV")
-    return Cipher(algorithms.AES(key), modes.CFB(iv)).encryptor().update(data)
+    return Cipher(algorithms.AES(key), _aes_modes.CFB(iv)).encryptor().update(data)
 
 
 def aes_cfb_decrypt(key: bytes, data: bytes, iv: bytes = b"0123456789abcdef") -> bytes:
     """Decrypt XML using AES-128-CFB, matching the public reference client."""
-    from types import ModuleType
-
-    modes: ModuleType
-    try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
-        try:
-            from cryptography.hazmat.decrepit.ciphers import modes
-        except ImportError:  # pragma: no cover - older cryptography
-            from cryptography.hazmat.primitives.ciphers import modes as primitive_modes
-            modes = primitive_modes
-    except ImportError as err:  # pragma: no cover - depends on HA runtime
-        raise RuntimeError("cryptography is required for AES Baichuan sessions") from err
     if len(key) != 16 or len(iv) != 16:
         raise ValueError("AES-CFB requires 16-byte key and IV")
-    return Cipher(algorithms.AES(key), modes.CFB(iv)).decryptor().update(data)
+    return Cipher(algorithms.AES(key), _aes_modes.CFB(iv)).decryptor().update(data)
 
 
 def modern_login_digests(username: str, password: str, nonce: str) -> tuple[str, str]:

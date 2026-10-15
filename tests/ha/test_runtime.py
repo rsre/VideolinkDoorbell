@@ -1,6 +1,9 @@
 """Entry-owned resource lifecycle tests."""
 
 import asyncio
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,6 +14,50 @@ pytest.importorskip("reolink_aio")
 
 from custom_components.videolink_doorbell.api import VideolinkConnectionError
 from custom_components.videolink_doorbell.runtime import VideolinkRuntime
+
+
+def test_cold_import_loads_subscription_ssl_outside_event_loop():
+    """Use a fresh process so cached imports cannot hide SSL initialization."""
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import asyncio
+import importlib
+import ssl
+import sys
+
+original = ssl.SSLContext.load_default_certs
+calls = []
+
+def checked_load(self, *args, **kwargs):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Certificate loading ran on the event loop")
+    calls.append(True)
+    return original(self, *args, **kwargs)
+
+ssl.SSLContext.load_default_certs = checked_load
+
+async def main():
+    # Home Assistant imports integration modules in its import executor.
+    await asyncio.to_thread(
+        importlib.import_module, "custom_components.videolink_doorbell"
+    )
+    assert "custom_components.videolink_doorbell.subscription" in sys.modules
+    assert "reolink_aio.api" in sys.modules
+    assert calls, "Cold import did not exercise certificate loading"
+
+asyncio.run(main())
+"""],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -15,9 +15,12 @@ from homeassistant.core import HomeAssistant, callback
 from .api import DeviceInfo, VideolinkClient, VideolinkConnectionError
 from .capture import NativeCaptureStore
 
-if TYPE_CHECKING:
-    from .stream import VideolinkStreams
-    from .subscription import DoorbellSubscription
+# Imported at module level so reolink_aio's module-scoped SSL context
+# (ssl.create_default_context -> load_default_certs) and this package's own
+# modules are loaded in Home Assistant's import executor instead of on the
+# event loop. The subscription and stream objects are still created lazily.
+from .stream import VideolinkStreams
+from .subscription import DoorbellSubscription
 
 _LOGGER = logging.getLogger(__name__)
 _CLEANUP_TIMEOUT = 10
@@ -57,8 +60,6 @@ class VideolinkRuntime:
     @property
     def streams(self) -> VideolinkStreams:
         if self._streams is None:
-            from .stream import VideolinkStreams
-
             self._streams = VideolinkStreams(self)
             self.async_add_cleanup(self._streams.async_close)
         return self._streams
@@ -71,8 +72,6 @@ class VideolinkRuntime:
     def doorbell(self) -> DoorbellSubscription:
         """Lazily create the entry's subscription; connect only for consumers."""
         if self._doorbell is None:
-            from .subscription import DoorbellSubscription
-
             self._doorbell = DoorbellSubscription(self)
             self.async_add_cleanup(self._doorbell.async_close)
         return self._doorbell

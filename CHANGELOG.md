@@ -2,6 +2,18 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.59] - 2026-10-16
+
+### Fixed
+
+- Build Reolink's module-scoped SSL context (`ssl.create_default_context` ->
+  `load_default_certs`) and import this package's subscription and stream
+  modules in Home Assistant's import executor instead of on the event loop,
+  removing the `Detected blocking call to load_default_certs` warning. The
+  doorbell subscription and stream objects are still created lazily.
+- Load the native AES cipher objects at module import so two-way-audio sessions
+  no longer import the `cryptography` native extension lazily on the event loop.
+
 ## [0.12.58] - 2026-10-15
 
 - Use automatic video card height in Sections dashboards so video and controls
