@@ -86,6 +86,22 @@ async def test_runtime_cancels_native_acquisition_and_closes_once(runtime):
         await runtime.async_start_native(0, owner="owner")
 
 
+async def test_shutdown_does_not_remove_consumed_listener(hass, runtime, caplog):
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    runtime.hass = hass
+    runtime.async_initialize()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    await runtime.async_close()
+
+    assert runtime.closed
+    assert runtime._shutdown_unsub is None
+    runtime.client.native_talk_stop.assert_awaited_once()
+    runtime.client.logout.assert_awaited_once()
+    assert "Unable to remove unknown job listener" not in caplog.text
+
+
 async def test_runtime_settles_tasks_and_continues_independent_cleanup(runtime):
     settled = asyncio.Event()
     async def background():

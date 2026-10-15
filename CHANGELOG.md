@@ -2,6 +2,16 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.60] - 2026-10-16
+
+### Fixed
+
+- Clear the consumed one-time shutdown listener before closing entry resources,
+  preventing `Unable to remove unknown job listener` errors when Home Assistant
+  stops. Normal integration unload still removes its pending listener.
+- Add a regression test using Home Assistant's event bus to verify shutdown
+  closes device resources exactly once without listener removal errors.
+
 ## [0.12.59] - 2026-10-16
 
 ### Fixed

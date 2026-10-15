@@ -84,6 +84,8 @@ class VideolinkRuntime:
         )
 
     async def _async_stop(self, _event) -> None:
+        # Home Assistant removes one-time listeners before invoking them.
+        self._shutdown_unsub = None
         await self.async_close()
 
     @callback
