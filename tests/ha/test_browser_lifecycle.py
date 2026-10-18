@@ -79,6 +79,7 @@ async def browser_runtime(hass, entry_runtime, monkeypatch, hass_client):
     entry, _, _ = entry_runtime
     client = VideolinkClient(async_get_clientsession(hass), "camera.local", "admin", "test")
     client.device_info = AsyncMock(return_value=DeviceInfo("Front", "Model", "serial", "FW"))
+    client.device_uid = AsyncMock(return_value="uid")
     monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     channels = []
 
