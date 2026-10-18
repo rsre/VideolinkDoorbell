@@ -21,7 +21,7 @@ There's two options for 2 way audio:
 3. Go to **Settings → Devices & services → Add integration** and search for **Videolink Doorbell**.
 4. Enter the camera host and the credentials used by its web console.
 
-For a trusted camera certificate, enable **Verify CGI HTTPS certificate** (the default for new setups). For a factory/self-signed certificate, explicitly disable it. Existing entries retain their setting. This setting covers CGI login, commands, and snapshots only.
+**Verify CGI HTTPS certificate** is unchecked by default for factory/self-signed camera certificates. Enable it when the camera uses a trusted certificate. Existing entries retain their setting. This setting covers CGI login, commands, and snapshots only.
 
 Select `main` for the console's Clear stream or `sub` for Fluent.
 
@@ -322,7 +322,7 @@ Core submission.
 ## Dashboard packaging and Core scope
 
 The HACS entry point (`__init__.py`) composes two independent setup hooks:
-`backend.py` owns device setup, migration, unload and native-talk WebSocket
+`backend.py` owns device setup, unload and native-talk WebSocket
 commands; `hacs_frontend.py` owns static card serving and Lovelace resource
 installation/migration. The backend never invokes the card installer. HACS
 continues to bundle and automatically install the card, including its YAML

@@ -87,12 +87,3 @@ async def test_pinned_uid_mismatch_does_not_rebind_entry(hass, entry_runtime):
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert entry.unique_id == "uid_channel_0"
     assert dict(entry.data) == saved_data
-
-
-async def test_serial_based_entry_requires_recreation(hass, entry_runtime, caplog):
-    entry, client, _ = entry_runtime
-    hass.config_entries.async_update_entry(entry, version=4, unique_id="serial_channel_0")
-    assert not await hass.config_entries.async_setup(entry.entry_id)
-    assert entry.state is ConfigEntryState.MIGRATION_ERROR
-    assert "remove and re-add" in caplog.text
-    client.device_info.assert_not_awaited()

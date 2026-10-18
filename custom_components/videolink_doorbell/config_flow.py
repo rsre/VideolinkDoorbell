@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_CHANNEL,
     DEFAULT_RTSP_PORT,
     DEFAULT_STREAM,
+    DEFAULT_VERIFY_SSL,
     DEFAULT_VIDEO_SOURCE,
     DOMAIN,
     STREAMS,
@@ -52,7 +53,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_PORT: values.get(CONF_PORT, 443),
             CONF_VIDEO_SOURCE: values.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE),
             CONF_RTSP_PORT: values.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
-            CONF_VERIFY_SSL: values.get(CONF_VERIFY_SSL, True),
+            CONF_VERIFY_SSL: values.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
         }
         return vol.Schema(
             {

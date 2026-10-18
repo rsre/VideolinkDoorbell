@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 
 from homeassistant.config_entries import (
@@ -35,7 +34,6 @@ from .websocket import async_register as async_register_websocket
 type VideolinkConfigEntry = ConfigEntry[VideolinkRuntime]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -86,12 +84,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
             await runtime.async_close()
         raise
     return True
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
-    """Require recreating pre-UID entries; no serial-based identity migration."""
-    _LOGGER.error("Videolink now uses camera UIDs; remove and re-add this integration entry")
-    return False
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:

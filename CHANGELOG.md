@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.62] - 2026-10-18
+
+- Leave **Verify CGI HTTPS certificate** unchecked by default for new setups;
+  preserve explicitly saved certificate settings.
+- Remove the legacy-entry rejection hook and its custom migration warning.
+  Camera identity continues to use UID; serial-based entries are not migrated.
+- Mock the UID request in the browser lifecycle fixture.
+
 ## [0.12.61] - 2026-10-18
 
 - Use the camera UID returned by `GetP2p` for config entries, devices and entities,
