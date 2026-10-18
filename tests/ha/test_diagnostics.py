@@ -43,7 +43,7 @@ async def test_diagnostics_are_redacted_and_do_not_contact_device(hass, entry, w
         flv_url=AsyncMock(),
     )
     runtime = entry.runtime_data = VideolinkRuntime(
-        client, DeviceInfo("private-camera-name", "Model", "private-camera-serial", "FW"), hass, entry,
+        client, DeviceInfo("private-camera-name", "Model", "private-camera-serial", "FW", uid="private-camera-uid"), hass, entry,
     )
     if with_services:
         # A resolved authenticated source and an opted-in raw capture must remain
@@ -66,6 +66,7 @@ async def test_diagnostics_are_redacted_and_do_not_contact_device(hass, entry, w
     assert result["entry"]["options"]["password"] == REDACTED
     assert result["entry"]["data"]["stream"] == "sub"
     assert result["device"]["serial"] == result["device"]["name"] == REDACTED
+    assert result["device"]["uid"] == REDACTED
     assert result["device"]["model"] == "Model"
     if with_services:
         assert result["runtime"]["doorbell"]["available"] is True

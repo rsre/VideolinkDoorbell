@@ -21,7 +21,7 @@ _CONFIG_FIELDS = frozenset({
     CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, CONF_CHANNEL,
     CONF_RTSP_PORT, CONF_STREAM, CONF_VERIFY_SSL, CONF_VIDEO_SOURCE,
 })
-_TO_REDACT = frozenset({CONF_HOST, CONF_PASSWORD, CONF_USERNAME, "name", "serial"})
+_TO_REDACT = frozenset({CONF_HOST, CONF_PASSWORD, CONF_USERNAME, "name", "serial", "uid"})
 
 
 def _configuration(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -51,7 +51,7 @@ async def async_get_config_entry_diagnostics(
         info = runtime.device_info
         diagnostics["device"] = async_redact_data({
             "name": info.name, "model": info.model,
-            "serial": info.serial, "firmware": info.firmware,
+            "serial": info.serial, "uid": info.uid, "firmware": info.firmware,
         }, _TO_REDACT)
         diagnostics["runtime"] = runtime.diagnostics()
     return diagnostics

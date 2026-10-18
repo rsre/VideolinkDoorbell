@@ -59,6 +59,7 @@ class DeviceInfo:
     model: str
     serial: str
     firmware: str
+    uid: str = ""
 
 
 class VideolinkClient:
@@ -296,6 +297,19 @@ class VideolinkClient:
                 raise VideolinkAuthError("Session expired")
             raise VideolinkError(error.get("detail", f"{cmd} failed"))
         raise VideolinkAuthError("Session expired")
+
+    async def device_uid(self) -> str:
+        """Read the camera UID independently of the firmware-reported serial."""
+        value = await self.command("GetP2p")
+        p2p = value.get("P2p")
+        if not isinstance(p2p, dict):
+            raise VideolinkError("Camera returned invalid UID information")
+        uid = p2p.get("uid")
+        if uid is None:
+            return ""
+        if not isinstance(uid, str):
+            raise VideolinkError("Camera returned invalid UID information")
+        return uid.strip()
 
     async def device_info(self) -> DeviceInfo:
         """Read camera identity."""

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
+
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigEntryAuthFailed,
@@ -32,6 +35,7 @@ from .websocket import async_register as async_register_websocket
 type VideolinkConfigEntry = ConfigEntry[VideolinkRuntime]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -51,7 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
         verify_ssl=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
     )
     try:
-        info = await client.device_info()
+        info = replace(await client.device_info(), uid=await client.device_uid())
     except VideolinkAuthError as err:
         await client.logout()
         raise ConfigEntryAuthFailed from err
@@ -62,12 +66,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
         await client.logout()
         raise ConfigEntryNotReady("Camera returned invalid device information") from err
     channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
-    legacy_id = f"{client.host}:{entry.data[CONF_PORT]}_channel_{channel}"
-    if entry.unique_id != legacy_id and (
-        not info.serial or entry.unique_id != f"{info.serial}_channel_{channel}"
-    ):
+    if not info.uid:
         await client.logout()
-        raise ConfigEntryNotReady("Camera identity changed or is missing; restore the original camera or add the replacement as a new integration")
+        raise ConfigEntryNotReady("Camera identity unavailable: GetP2p returned no UID")
+    if entry.unique_id != f"{info.uid}_channel_{channel}":
+        await client.logout()
+        raise ConfigEntryNotReady("Camera UID does not match the configured device")
     runtime = entry.runtime_data = VideolinkRuntime(client, info, hass, entry)
     runtime.async_initialize()
     entry.async_on_unload(entry.add_update_listener(runtime.async_config_entry_updated))
@@ -85,23 +89,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) ->
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:
-    """Migrate legacy config-entry identities and device titles."""
-    updates: dict[str, object] = {}
-    if entry.version == 1:
-        channel = entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)
-        unique_id = entry.unique_id
-        if unique_id is not None and not unique_id.endswith(f"_channel_{channel}"):
-            updates["unique_id"] = f"{unique_id}_channel_{channel}"
-    if entry.version < 4:
-        host = VideolinkClient._normalize_host(entry.data[CONF_HOST])
-        suffix = f" ({host})"
-        title = updates.get("title", entry.title)
-        if isinstance(title, str) and title.endswith(suffix):
-            updates["title"] = title[: -len(suffix)]
-        updates["version"] = 4
-    if updates:
-        hass.config_entries.async_update_entry(entry, **updates)
-    return True
+    """Require recreating pre-UID entries; no serial-based identity migration."""
+    _LOGGER.error("Videolink now uses camera UIDs; remove and re-add this integration entry")
+    return False
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: VideolinkConfigEntry) -> bool:

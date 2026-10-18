@@ -23,8 +23,8 @@ from custom_components.videolink_doorbell.runtime import VideolinkRuntime
 
 def make_entry():
     return ConfigEntry(
-        domain="videolink_doorbell", title="Front", version=4, minor_version=1,
-        source="user", unique_id="serial_channel_0", options={},
+        domain="videolink_doorbell", title="Front", version=5, minor_version=1,
+        source="user", unique_id="uid_channel_0", options={},
         data={"host": "camera.local", "port": 443, "username": "admin", "password": "test"},
         discovery_keys=MappingProxyType({}), subentries_data=(),
     )
@@ -54,7 +54,7 @@ async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error,
     monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     forward = AsyncMock()
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
-                           config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+                           config_entries=SimpleNamespace(async_forward_entry_setups=forward, async_entries=Mock(return_value=[]), async_update_entry=Mock()))
     entry = make_entry()
     with pytest.raises(expected):
         await backend.async_setup_entry(hass, entry)
@@ -63,32 +63,32 @@ async def test_metadata_failure_prevents_platform_forwarding(monkeypatch, error,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_setup_stores_metadata_before_forwarding(monkeypatch, legacy):
-    info = DeviceInfo("Front", "Model", "" if legacy else "serial", "Firmware")
-    client = SimpleNamespace(host="camera.local", logout=AsyncMock(), device_info=AsyncMock(return_value=info))
+@pytest.mark.parametrize("serial", ["serial", "changed-serial", ""])
+async def test_setup_stores_metadata_before_forwarding(monkeypatch, serial):
+    info = DeviceInfo("Front", "Model", serial, "Firmware", uid="uid")
+    client = SimpleNamespace(host="camera.local", logout=AsyncMock(), device_info=AsyncMock(return_value=info), device_uid=AsyncMock(return_value="uid"))
     monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     entry = make_entry()
-    if legacy:
-        object.__setattr__(entry, "unique_id", "camera.local:443_channel_0")
     async def forward(actual_entry, platforms):
         assert actual_entry.runtime_data.client is client
-        assert actual_entry.runtime_data.device_info is info
+        assert actual_entry.runtime_data.device_info == info
     hass = SimpleNamespace(bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())),
-                           config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+                           config_entries=SimpleNamespace(async_forward_entry_setups=forward, async_entries=Mock(return_value=[]), async_update_entry=Mock()))
     assert await backend.async_setup_entry(hass, entry)
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("serial", ["different", ""])
-async def test_setup_rejects_missing_or_changed_identity(monkeypatch, serial):
+@pytest.mark.parametrize("uid", ["different-uid", ""])
+async def test_setup_rejects_missing_or_changed_uid(monkeypatch, uid):
     client = SimpleNamespace(host="camera.local", logout=AsyncMock(),
-        device_info=AsyncMock(return_value=DeviceInfo("Front", "Model", serial, "FW")))
+        device_uid=AsyncMock(return_value=uid),
+        device_info=AsyncMock(return_value=DeviceInfo("Front", "Model", "changed-serial", "FW")))
     monkeypatch.setattr(backend, "VideolinkClient", Mock(return_value=client))
     monkeypatch.setattr(backend, "async_get_clientsession", Mock())
     forward = AsyncMock()
     hass = SimpleNamespace(config_entries=SimpleNamespace(async_forward_entry_setups=forward))
-    with pytest.raises(ConfigEntryNotReady, match="identity"):
+    with pytest.raises(ConfigEntryNotReady, match="UID"):
         await backend.async_setup_entry(hass, make_entry())
     forward.assert_not_awaited()
     client.logout.assert_awaited_once()

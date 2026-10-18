@@ -106,6 +106,22 @@ async def test_optional_null_device_fields_use_safe_defaults():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("uid,expected", [("uid-value", "uid-value"), (" uid ", "uid"), (None, ""), ("", "")])
+async def test_device_uid_uses_get_p2p(uid, expected):
+    client = client_for(Response([{"code": 0, "value": {"P2p": {"uid": uid}}}]))
+    assert await client.device_uid() == expected
+    assert client._session.calls[0]["json"] == [{"cmd": "GetP2p", "action": 0, "param": {}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [{}, {"P2p": []}, {"P2p": {"uid": 123}}, {"P2p": {"uid": ["bad"]}}])
+async def test_malformed_uid_response_is_rejected(value):
+    client = client_for(Response([{"code": 0, "value": value}]))
+    with pytest.raises(api.VideolinkError, match="UID information"):
+        await client.device_uid()
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_is_sanitized_and_next_request_recovers():
     client = client_for(Response(raw_json="{old-secret-token"), Response(DEVICE))
     with pytest.raises(api.VideolinkConnectionError) as caught:

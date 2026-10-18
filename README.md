@@ -32,6 +32,12 @@ Connection, credential, stream, and CGI certificate settings can be updated
 from the integration's **Reconfigure** action. Authentication failures prompt for
 replacement credentials without requiring the integration to be removed.
 
+Camera identity uses the UID returned by `GetP2p`, matching the UID shown in
+the camera interface. The `GetDevInfo` serial is informational. When upgrading
+from version 0.12.60 or earlier, remove the existing integration entry and add
+it again; serial-based entries are not migrated. Update dashboard and automation
+entity references if Home Assistant assigns different entity IDs.
+
 ## Doorbell button automations
 
 The integration creates a **Doorbell** event entity on the camera device. It
@@ -356,7 +362,7 @@ notification API; that boundary is isolated in `go2rtc.py` and covered by tests.
 
 Home Assistant's integration diagnostics download reports known connection
 settings, model/firmware and cached runtime/subscription/stream health. It
-redacts the host, credentials, camera name and serial number. Tokens,
+redacts the host, credentials, camera name, serial number and UID. Tokens,
 authenticated URLs, raw captures and audio are excluded. Downloads make no
 device requests and do not start disabled entities' lazy services; they also
 work before successful setup and after unload.

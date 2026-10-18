@@ -42,6 +42,8 @@ async def test_camera_restart_recovers_snapshot_and_existing_hls_source(
             return web.Response(body=b"\xff\xd8jpeg", content_type="image/jpeg")
         elif cmd == "GetDevInfo":
             value = {"DevInfo": {"name": "Front", "model": "Model", "serial": "serial", "firmVer": "FW"}}
+        elif cmd == "GetP2p":
+            value = {"P2p": {"uid": "uid"}}
         else:
             assert cmd == "GetNetPort"
             value = {"NetPort": {"rtmpPort": 1935}}
@@ -84,7 +86,7 @@ async def test_camera_restart_recovers_snapshot_and_existing_hls_source(
             assert "token=session-2" in hls.source
             hls.update_source.assert_called_once_with(hls.source)
             assert hass.data[DATA_COMPONENT].get_entity(camera.entity_id) is camera
-            assert entry.unique_id == "serial_channel_0"
+            assert entry.unique_id == "uid_channel_0"
         finally:
             assert await hass.config_entries.async_unload(entry.entry_id)
         assert sources._cancel_interval is None

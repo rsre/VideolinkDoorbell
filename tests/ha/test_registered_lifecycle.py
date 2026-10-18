@@ -77,6 +77,7 @@ async def test_reauth_rejects_different_camera_with_translated_abort(hass, entry
     entry, client, _ = entry_runtime
     original_data = dict(entry.data)
     client.device_info.return_value = DeviceInfo("Other", "Model", "other_serial", "FW")
+    client.device_uid.return_value = "other-uid"
     factory = Mock(return_value=client)
     factory._normalize_host = VideolinkClient._normalize_host
     monkeypatch.setattr(config_flow, "VideolinkClient", factory)
@@ -93,7 +94,7 @@ async def test_reauth_rejects_different_camera_with_translated_abort(hass, entry
         "The connected camera does not match the configured device. Add it as a new integration."
     )
     assert entry.data == original_data
-    assert entry.unique_id == "serial_channel_0"
+    assert entry.unique_id == "uid_channel_0"
     assert entry.state is ConfigEntryState.NOT_LOADED
 
 
@@ -138,7 +139,7 @@ async def test_metadata_auth_failure_completes_real_reauthentication_and_reload(
     await hass.async_block_till_done()
     assert result["reason"] == "reauth_successful"
     assert entry.data["password"] == "replacement"
-    assert entry.unique_id == "serial_channel_0"
+    assert entry.unique_id == "uid_channel_0"
     assert entry.state is ConfigEntryState.LOADED
     assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 2
     assert await hass.config_entries.async_unload(entry.entry_id)

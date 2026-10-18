@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import voluptuous as vol
@@ -42,7 +43,7 @@ class MissingIdentityError(VideolinkError):
 class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle setup through the Home Assistant UI."""
 
-    VERSION = 4
+    VERSION = 5
 
     def _schema(self, defaults: dict[str, Any] | None = None) -> vol.Schema:
         """Build the camera configuration schema."""
@@ -116,22 +117,22 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             verify_ssl=user_input[CONF_VERIFY_SSL],
         )
         try:
-            return await client.device_info()
+            return replace(await client.device_info(), uid=await client.device_uid())
         finally:
             await client.logout()
 
     @staticmethod
     def _unique_id(info: DeviceInfo, user_input: dict[str, Any]) -> str:
         """Build the stable per-channel config-entry unique ID."""
-        if not info.serial:
-            raise MissingIdentityError("Camera did not provide a serial number")
-        device_id = info.serial
+        if not info.uid:
+            raise MissingIdentityError("Camera did not provide a UID")
+        device_id = info.uid
         return f"{device_id}_channel_{user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)}"
 
     def _connection_is_configured(
         self, user_input: dict[str, Any], *, exclude_entry_id: str | None = None
     ) -> bool:
-        """Detect an existing entry before a changing API serial can bypass it."""
+        """Detect an existing camera endpoint as well as duplicate UIDs."""
         host = VideolinkClient._normalize_host(user_input[CONF_HOST])
         port = user_input[CONF_PORT]
         channel = user_input.get(CONF_CHANNEL, DEFAULT_CHANNEL)
@@ -144,18 +145,7 @@ class VideolinkWebConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _async_check_identity(self, entry, info: DeviceInfo, updated: dict[str, Any]) -> None:
-        """Keep registry identity stable, including existing address-based entries."""
-        old_host = VideolinkClient._normalize_host(entry.data[CONF_HOST])
-        legacy_id = f"{old_host}:{entry.data[CONF_PORT]}_channel_{entry.data.get(CONF_CHANNEL, DEFAULT_CHANNEL)}"
-        if entry.unique_id == legacy_id:
-            if any(
-                updated.get(key, DEFAULT_CHANNEL if key == CONF_CHANNEL else None)
-                != entry.data.get(key, DEFAULT_CHANNEL if key == CONF_CHANNEL else None)
-                for key in (CONF_PORT, CONF_CHANNEL)
-            ) or VideolinkClient._normalize_host(updated[CONF_HOST]) != old_host:
-                raise data_entry_flow.AbortFlow("wrong_device")
-            # Old entries lack a hardware identity; retain their existing registry IDs.
-            return
+        """Require the same camera UID and channel when updating an entry."""
         await self.async_set_unique_id(self._unique_id(info, updated))
         self._abort_if_unique_id_mismatch(reason="wrong_device")
 

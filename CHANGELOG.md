@@ -2,6 +2,16 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.61] - 2026-10-18
+
+- Use the camera UID returned by `GetP2p` for config entries, devices and entities,
+  and validate it during setup, reconfiguration and reauthentication. Changes to
+  the `GetDevInfo` serial no longer prevent setup.
+- Require removing and re-adding existing serial-based entries. Config entry
+  version 5 uses UID identities without legacy migration.
+- Redact UIDs from integration diagnostics and add regressions for missing,
+  malformed and mismatched UIDs, duplicate setup and serial changes.
+
 ## [0.12.60] - 2026-10-16
 
 ### Fixed

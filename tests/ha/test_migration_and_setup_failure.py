@@ -1,4 +1,4 @@
-"""Migrate legacy entries and roll back interrupted platform forwarding."""
+"""Validate UID identities and roll back interrupted platform forwarding."""
 
 import asyncio
 
@@ -9,38 +9,6 @@ pytest.importorskip("pytest_homeassistant_custom_component")
 from homeassistant.components.camera.const import DATA_COMPONENT as CAMERA_COMPONENT
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
-
-from custom_components.videolink_doorbell.const import DOMAIN
-
-
-@pytest.mark.parametrize("version,old_id,new_id", [
-    (1, "serial", "serial_channel_0"),
-    (1, "serial_channel_0", "serial_channel_0"),
-    (1, "camera.local:443", "camera.local:443_channel_0"),
-    (2, "camera.local:443_channel_0", "camera.local:443_channel_0"),
-    (3, "serial_channel_0", "serial_channel_0"),
-])
-async def test_legacy_migration_preserves_existing_registry_entities(hass, entry_runtime, version, old_id, new_id):
-    entry, _, _ = entry_runtime
-    hass.config_entries.async_update_entry(entry, version=version, unique_id=old_id, title="Front (camera.local)")
-    registry = er.async_get(hass)
-    original = registry.async_get_or_create(
-        "camera", DOMAIN, new_id, config_entry=entry, suggested_object_id="custom_front",
-    )
-    registry.async_update_entity(original.entity_id, name="My front camera")
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    assert entry.version == 4
-    assert entry.unique_id == new_id
-    assert entry.title == "Front"
-    assert registry.async_get(original.entity_id).name == "My front camera"
-    assert hass.states.get(original.entity_id).attributes["friendly_name"] == "My front camera"
-    assert len(er.async_entries_for_config_entry(registry, entry.entry_id)) == 2
-    assert await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
-    assert entry.unique_id == new_id
-    assert len(er.async_entries_for_config_entry(registry, entry.entry_id)) == 2
-    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize("cancel", [False, True])
@@ -87,3 +55,44 @@ async def test_failed_forwarding_unloads_started_entities_and_allows_retry(hass,
     finally:
         setup.cancel()
         await asyncio.gather(setup, return_exceptions=True)
+
+
+@pytest.mark.parametrize("serial", ["changed-serial", ""])
+async def test_uid_entities_survive_serial_changes(hass, entry_runtime, serial):
+    from custom_components.videolink_doorbell.api import DeviceInfo
+
+    entry, client, _ = entry_runtime
+    client.device_info.return_value = DeviceInfo("Front", "Model", serial, "FW")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, entry.entry_id)
+    assert {entity.unique_id for entity in entities} == {"uid_channel_0", "uid_channel_0_ring"}
+    original_ids = {entity.entity_id for entity in entities}
+    assert entry.unique_id == "uid_channel_0"
+    client.device_info.return_value = DeviceInfo("Front", "Model", "another-serial", "FW")
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert {entity.entity_id for entity in er.async_entries_for_config_entry(registry, entry.entry_id)} == original_ids
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_pinned_uid_mismatch_does_not_rebind_entry(hass, entry_runtime):
+    entry, client, _ = entry_runtime
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    saved_data = dict(entry.data)
+    client.device_uid.return_value = "replacement-uid"
+    assert not await hass.config_entries.async_reload(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.unique_id == "uid_channel_0"
+    assert dict(entry.data) == saved_data
+
+
+async def test_serial_based_entry_requires_recreation(hass, entry_runtime, caplog):
+    entry, client, _ = entry_runtime
+    hass.config_entries.async_update_entry(entry, version=4, unique_id="serial_channel_0")
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.MIGRATION_ERROR
+    assert "remove and re-add" in caplog.text
+    client.device_info.assert_not_awaited()

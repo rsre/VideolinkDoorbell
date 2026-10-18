@@ -24,6 +24,7 @@ async def entry_runtime(hass, enable_custom_integrations, monkeypatch):
     client = AsyncMock(spec=VideolinkClient)
     client.host = "camera.local"
     client.port = 443
+    client.device_uid.return_value = "uid"
     client.base_url = "https://camera.local"
     client.device_info.return_value = DeviceInfo("Front", "Model", "serial", "FW")
     client_factory = Mock(return_value=client)
@@ -36,7 +37,7 @@ async def entry_runtime(hass, enable_custom_integrations, monkeypatch):
     )
     monkeypatch.setattr(subscription, "Host", Mock(return_value=host))
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Front", version=4, unique_id="serial_channel_0",
+        domain=DOMAIN, title="Front", version=5, unique_id="uid_channel_0",
         data={"host": "camera.local", "port": 443, "username": "admin", "password": "test", "verify_ssl": True},
     )
     entry.add_to_hass(hass)
