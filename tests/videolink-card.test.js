@@ -17,6 +17,194 @@ const source = fs.readFileSync(
 );
 vm.runInThisContext(`${source}\nglobal.CardUnderTest = VideolinkDoorbellCard;`);
 
+function keyboardEnvironment(t) {
+  const previousWindow = global.window;
+  const previousDocument = global.document;
+  global.window = Object.assign(new EventTarget(), { isSecureContext: true });
+  global.document = Object.assign(new EventTarget(), { hidden: false, hasFocus: () => true });
+  const cards = [];
+  t.after(async () => {
+    for (const card of cards) {
+      card.disconnectedCallback();
+      await card._haCleanup;
+    }
+    global.window = previousWindow;
+    if (previousDocument === undefined) delete global.document;
+    else global.document = previousDocument;
+  });
+
+  return {
+    card(talk_mode = "rtsp") {
+      const card = new CardUnderTest();
+      card.isConnected = true;
+      card._config = { talk_mode, mute_while_talking: true };
+      card._streamReady = true;
+      card._talkButton = { disabled: false, getClientRects: () => [{}] };
+      card._render = card._bindHaConnection = card._updateTalkButton
+        = card._updateSoundButton = card._updateDiagnosticsView
+        = card._prepareNativeMixPlayback = () => undefined;
+      card._start = async () => undefined;
+      card._cleanup = () => card._stopMicrophone();
+      card._ensureNativeTalkSession = async () => { card._nativeSessionReady = true; };
+      card._startNativeTalkCapture = async () => { card._nativeTalking = true; };
+      card._stopNativeTalkCapture = async () => { card._nativeTalking = false; };
+      card.attachedTracks = [];
+      card._audioSender = {
+        getStats: async () => new Map(),
+        replaceTrack: async (track) => { card.attachedTracks.push(track); },
+      };
+      card.micRequests = 0;
+      card.tracks = [];
+      card._getMicrophoneStream = async () => {
+        card.micRequests += 1;
+        const track = { readyState: "live", stop() { this.readyState = "ended"; } };
+        card.tracks.push(track);
+        return { getTracks: () => [track], getAudioTracks: () => [track] };
+      };
+      cards.push(card);
+      card.connectedCallback();
+      return card;
+    },
+    key(type, properties = {}, path = []) {
+      const event = Object.assign(new Event(type, { cancelable: true }), {
+        key: " ", code: "Space", composedPath: () => path, ...properties,
+      });
+      document.dispatchEvent(event);
+      return event;
+    },
+    flush: () => new Promise(setImmediate),
+  };
+}
+
+for (const mode of ["rtsp", "native"]) {
+  test(`Space opens the ${mode} microphone without button focus and release stops it`, async (t) => {
+    const env = keyboardEnvironment(t);
+    const card = env.card(mode);
+    assert.equal(env.key("keydown").defaultPrevented, true);
+    await env.flush();
+    assert.equal(card._talking, true);
+    assert.equal(card.micRequests, 1);
+    assert.equal(card.tracks[0].readyState, "live");
+    assert.equal(env.key("keydown", { repeat: true }).defaultPrevented, true);
+    await env.flush();
+    assert.equal(card.micRequests, 1);
+    // Release must stop capture even if focus moved into an input meanwhile.
+    env.key("keyup", {}, [{ matches: () => true }]);
+    await env.flush();
+    assert.equal(card._talking, false);
+    assert.equal(card._micStream, undefined);
+    assert.equal(card.tracks[0].readyState, "ended");
+    if (mode === "rtsp") assert.equal(card.attachedTracks.at(-1), null);
+    else assert.equal(card._nativeTalking, false);
+  });
+}
+
+test("Space leaves typing, other controls and modified shortcuts alone", async (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  // composedPath includes controls nested inside HA's shadow roots.
+  for (const node of [{ matches: () => true }, { isContentEditable: true }]) {
+    assert.equal(env.key("keydown", {}, [{}, node, {}]).defaultPrevented, false);
+  }
+  for (const property of ["ctrlKey", "altKey", "metaKey", "shiftKey", "repeat", "isComposing"]) {
+    assert.equal(env.key("keydown", { [property]: true }).defaultPrevented, false);
+  }
+  const prevented = new Event("keydown", { cancelable: true });
+  Object.assign(prevented, { key: " ", code: "Space" });
+  prevented.preventDefault();
+  document.dispatchEvent(prevented);
+  await env.flush();
+  assert.equal(card.micRequests, 0);
+});
+
+test("Space requires an active tab and an available visible talk control", async (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  for (const [object, property, value] of [
+    [document, "hidden", true], [document, "hasFocus", () => false],
+    [card, "isConnected", false], [card._config, "card_style", "video"],
+    [card._talkButton, "disabled", true], [card._talkButton, "getClientRects", () => []],
+    [card, "_talking", true], [card, "_micPending", true], [card, "_toneTesting", true],
+  ]) {
+    const previous = object[property];
+    object[property] = value;
+    assert.equal(env.key("keydown").defaultPrevented, false, property);
+    object[property] = previous;
+  }
+  await env.flush();
+  assert.equal(card.micRequests, 0);
+});
+
+test("only one card handles Space and focusing a card selects it", async (t) => {
+  const env = keyboardEnvironment(t);
+  const first = env.card();
+  const second = env.card();
+  env.key("keydown");
+  await env.flush();
+  assert.equal(first.micRequests, 1);
+  assert.equal(second.micRequests, 0);
+  env.key("keyup");
+  await env.flush();
+  env.key("keydown", {}, [second._talkButton, second]);
+  await env.flush();
+  assert.equal(first.micRequests, 1);
+  assert.equal(second.micRequests, 1);
+  env.key("keyup");
+  await env.flush();
+});
+
+for (const interruption of ["blur", "hidden", "removed"]) {
+  test(`Space stops the microphone when the page is ${interruption}`, async (t) => {
+    const env = keyboardEnvironment(t);
+    const card = env.card();
+    env.key("keydown");
+    await env.flush();
+    if (interruption === "blur") window.dispatchEvent(new Event("blur"));
+    if (interruption === "hidden") {
+      document.hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+    if (interruption === "removed") {
+      card.isConnected = false;
+      card.disconnectedCallback();
+    }
+    await env.flush();
+    assert.equal(card._talking, false);
+    assert.equal(card._spaceHeld, false);
+    assert.equal(card.tracks[0].readyState, "ended");
+    document.hidden = false;
+    card.isConnected = true;
+    // Returning while Space is still physically held must require a new press.
+    assert.equal(env.key("keydown", { repeat: true }).defaultPrevented, false);
+    env.key("keyup");
+    await env.flush();
+    assert.equal(card.micRequests, 1);
+    if (interruption === "removed") {
+      assert.equal(env.key("keydown").defaultPrevented, false);
+      await env.flush();
+      assert.equal(card.micRequests, 1);
+    }
+  });
+}
+
+test("releasing Space before microphone permission resolves stops the late track", async (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  let resolveMic;
+  card._getMicrophoneStream = () => new Promise((resolve) => { resolveMic = resolve; });
+  env.key("keydown");
+  await env.flush();
+  env.key("keyup");
+  await env.flush();
+  const track = { readyState: "live", stop() { this.readyState = "ended"; } };
+  resolveMic({ getTracks: () => [track], getAudioTracks: () => [track] });
+  await env.flush();
+  assert.equal(track.readyState, "ended");
+  assert.equal(card._talking, false);
+  assert.equal(card._micStream, undefined);
+  assert.deepEqual(card.attachedTracks, [null]);
+});
+
 test("new cards default to scaled video", () => {
   assert.equal(CardUnderTest.getStubConfig(undefined, ["camera.front_door"]).video_fit, "contain");
 });

@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [0.12.63] - 2026-10-22
+
+- Hold Space anywhere outside text fields and other controls in the active Home
+  Assistant tab to talk, then release it to turn the microphone off. Preserve
+  microphone cleanup on tab changes, window blur and card removal.
+- Bundle dashboard card 0.12.60 and refresh the HACS resource cache version.
+
 ## [0.12.62] - 2026-10-18
 
 - Leave **Verify CGI HTTPS certificate** unchecked by default for new setups;

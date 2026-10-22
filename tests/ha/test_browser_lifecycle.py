@@ -168,6 +168,50 @@ async def remove(page):
     assert await page.evaluate("browserTest.connection.eventListeners.get('ready').length") == 1
 
 
+async def test_space_talks_without_button_focus_and_preserves_shadow_dom_typing(
+    browser_runtime, hass_access_token,
+):
+    runtime = browser_runtime
+    page = await mount(runtime, hass_access_token)
+    await page.bring_to_front()
+    channel = runtime.channels[-1]
+    assert await page.evaluate("document.activeElement === document.body")
+    await page.keyboard.down("Space")
+    await eventually(lambda: bool(channel.frames))
+    await page.wait_for_function("browserTest.card._talking")
+    await page.evaluate("window.capturedTrack = browserTest.card._micStream.getAudioTracks()[0]")
+    # Key repeat must not request another microphone or scroll the page.
+    await page.keyboard.down("Space")
+    await page.keyboard.up("Space")
+    await page.wait_for_function("!browserTest.card._talking && !browserTest.card._micStream")
+    assert await page.evaluate("capturedTrack.readyState") == "ended"
+
+    # HA controls commonly live inside nested shadow roots. Space must still
+    # type normally there instead of opening the doorbell microphone.
+    await page.evaluate("""() => {
+        const host = document.createElement('div');
+        const root = host.attachShadow({mode: 'open'});
+        root.innerHTML = '<input aria-label="Test text">';
+        document.body.append(host);
+        root.querySelector('input').focus();
+    }""")
+    field = page.get_by_role("textbox", name="Test text")
+    await page.keyboard.press("Space")
+    assert await field.input_value() == " "
+    assert not await page.evaluate("browserTest.card._talkRequested || browserTest.card._micStream")
+
+    await field.evaluate("element => element.blur()")
+    before = len(channel.frames)
+    await page.keyboard.down("Space")
+    await eventually(lambda: len(channel.frames) > before)
+    await field.focus()
+    await page.keyboard.up("Space")
+    await page.wait_for_function("!browserTest.card._talking && !browserTest.card._micStream")
+    assert await field.input_value() == " "
+    await remove(page)
+    await page.evaluate("browserTest.connection.close()")
+
+
 async def test_websocket_loss_releases_microphone_and_reconnects_native_session(
     browser_runtime, hass_access_token,
 ):

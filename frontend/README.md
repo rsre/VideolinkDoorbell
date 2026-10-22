@@ -39,6 +39,15 @@ registers it, so its users can continue using the automatic installation.
 The standalone artifact is intended for backend distributions that omit it,
 including a future Core integration.
 
+## Push to talk
+
+While Home Assistant is the active browser tab, hold **Space** to turn your
+microphone on and release it to turn it off again. The **Hold to talk** button
+does not need focus. Switching tabs or leaving the window also stops the
+microphone. Space retains its normal behavior in text fields and other controls.
+If several cards are available, focus the desired card's **Hold to talk** button;
+otherwise, the first available card handles the shortcut.
+
 ## Maintain the HACS bundle
 
 Edit `frontend/videolink-doorbell.js`, then run:

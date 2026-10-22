@@ -72,6 +72,13 @@ entity: camera.your_videolink_camera
 
 Home Assistant must be used over HTTPS (or localhost) because browsers block microphone capture on insecure origins.
 
+Hold **Space** to turn on your microphone and talk; release it to turn the
+microphone off again. This works while Home Assistant is the active browser
+tab, without focusing the **Hold to talk** button. Switching tabs or leaving
+the window also turns the microphone off. Space keeps its usual behavior when
+typing or using other controls. With multiple cards, focus the desired card's
+**Hold to talk** button; otherwise, the first available card handles Space.
+
 The card also has an independent [source and distribution](frontend/README.md)
 for backend installations that omit automatic card installation.
 

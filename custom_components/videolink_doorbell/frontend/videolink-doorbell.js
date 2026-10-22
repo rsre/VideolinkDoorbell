@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.59";
+const CARD_VERSION = "0.12.60";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -67,6 +67,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._micPending = false;
     this._talking = false;
     this._talkRequested = false;
+    this._spaceHeld = false;
     this._muted = true;
     this._mutedBeforeTalk = undefined;
     this._diagnosticTimer = undefined;
@@ -210,11 +211,15 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._bindHaConnection();
     this._runLifecycle("start stream", () => this._start());
     document.addEventListener("visibilitychange", this._visibilityHandler);
+    document.addEventListener("keydown", this._spaceKeyDown);
+    document.addEventListener("keyup", this._spaceKeyUp, true);
     window.addEventListener("blur", this._windowBlurHandler);
   }
 
   disconnectedCallback() {
     document.removeEventListener("visibilitychange", this._visibilityHandler);
+    document.removeEventListener("keydown", this._spaceKeyDown);
+    document.removeEventListener("keyup", this._spaceKeyUp, true);
     window.removeEventListener("blur", this._windowBlurHandler);
     this._bindHaConnection();
     this._queueHaCleanup("clean up stream");
@@ -341,7 +346,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         ${window.isSecureContext || this._controlsHidden ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
         ${this._controlsHidden ? "" : `<div class="controls">
           <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
-          <button class="talk" type="button" aria-label="Hold to talk">Hold to talk</button>
+          <button class="talk" type="button" aria-label="Hold to talk" aria-keyshortcuts="Space Enter">Hold to talk</button>
           ${this._config.talk_mode === "native" && this._config.debug ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
         ${this._config.debug ? '<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre><button class="copy-diagnostics" type="button">Copy diagnostics</button></details>' : ""}
@@ -931,11 +936,49 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   _talkKeyDown = (event) => {
-    if ((event.key === " " || event.key === "Enter") && !event.repeat) this._safeBeginTalk(event);
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (!event.repeat) this._safeBeginTalk(event);
+    }
   };
 
   _talkKeyUp = (event) => {
-    if (event.key === " " || event.key === "Enter") this._safeEndTalk(event);
+    if (event.key === "Enter") this._safeEndTalk(event);
+  };
+
+  _spaceKeyDown = (event) => {
+    if (event.code !== "Space" && event.key !== " ") return;
+    if (this._spaceHeld) {
+      event.preventDefault();
+      return;
+    }
+    if (event.defaultPrevented || event.repeat || event.isComposing
+      || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey
+      || document.hidden || !document.hasFocus() || !this.isConnected
+      || this._controlsHidden || !this._talkButton || this._talkButton.disabled
+      || !this._talkButton.getClientRects().length
+      || this._talking || this._talkRequested || this._micPending || this._toneTesting) return;
+
+    const path = event.composedPath();
+    // Respect controls throughout HA's shadow DOM and target a focused card
+    // before falling back to the first available card on the page.
+    if (path.some((node) => node instanceof VideolinkDoorbellCard && node !== this)) return;
+    if (path.some((node) => node !== this._talkButton && (node.isContentEditable
+      || node.matches?.('input, textarea, select, button, a[href], summary, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="button"], [role="slider"], [role="checkbox"], [role="switch"]')))) return;
+
+    // Claim the gesture synchronously to prevent scrolling and keep another
+    // card from opening its microphone for the same key press.
+    event.preventDefault();
+    this._spaceHeld = true;
+    this._safeBeginTalk(event);
+  };
+
+  _spaceKeyUp = (event) => {
+    if ((event.code === "Space" || event.key === " ") && this._spaceHeld) {
+      event.preventDefault();
+      this._spaceHeld = false;
+      this._safeEndTalk(event);
+    }
   };
 
   async _stopMicrophone() {
@@ -945,6 +988,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       ? false
       : this._mutedBeforeTalk;
     this._talkRequested = false;
+    this._spaceHeld = false;
     if (this._microphoneGain && this._keepaliveContext) {
       this._microphoneGain.gain.setValueAtTime(0, this._keepaliveContext.currentTime);
     }
@@ -1441,7 +1485,8 @@ class VideolinkDoorbellCard extends HTMLElement {
           ? "Loading…"
           : "Hold to talk";
     this._talkButton.title = insecure ? "HTTPS is required for microphone access"
-      : backchannelUnavailable ? "RTSP talk unavailable. Check the go2rtc provider in Home Assistant." : "";
+      : backchannelUnavailable ? "RTSP talk unavailable. Check the go2rtc provider in Home Assistant."
+        : "Hold Space to talk while Home Assistant is the active tab";
     this._talkButton.setAttribute("aria-busy", String(loading));
     this._updateToneButton();
   }
