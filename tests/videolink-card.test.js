@@ -83,6 +83,7 @@ for (const mode of ["rtsp", "native"]) {
     assert.equal(env.key("keydown").defaultPrevented, true);
     await env.flush();
     assert.equal(card._talking, true);
+    assert.deepEqual(card._talkTrace, [], "tracing is disabled by default");
     assert.equal(card.micRequests, 1);
     assert.equal(card.tracks[0].readyState, "live");
     assert.equal(env.key("keydown", { repeat: true }).defaultPrevented, true);
@@ -98,6 +99,71 @@ for (const mode of ["rtsp", "native"]) {
     else assert.equal(card._nativeTalking, false);
   });
 }
+
+for (const mode of ["rtsp", "native"]) {
+  test(`debug diagnostics include the Space and ${mode} microphone lifecycle`, async (t) => {
+    const env = keyboardEnvironment(t);
+    const card = env.card(mode);
+    card._config.debug = true;
+    env.key("keydown");
+    await env.flush();
+    // Holding Space must not fill the trace with repeat events.
+    const traceLength = card._talkTrace.length;
+    for (let i = 0; i < 50; i++) env.key("keydown", { repeat: true });
+    assert.equal(card._talkTrace.length, traceLength);
+    env.key("keyup");
+    await env.flush();
+    card._diagnosticsOutput = { textContent: "" };
+    CardUnderTest.prototype._updateDiagnosticsView.call(card);
+    const output = card._diagnosticsOutput.textContent;
+    assert.match(output, /PTT availability: secure=true, streamReady=true, audioSender=true/);
+    assert.match(output, /PTT state: spaceHeld=false, requested=false, micPending=false, talking=false/);
+    assert.match(output, /Space keydown captured:/);
+    assert.match(output, /Space keydown accepted; starting talk/);
+    assert.match(output, /Requesting microphone permission\/capture/);
+    assert.match(output, new RegExp(`Microphone active \\(${mode}\\)`));
+    assert.match(output, /Space keyup: stopping talk/);
+    assert.match(output, /Microphone tracks stopped/);
+  });
+}
+
+test("Space debug trace explains rejected gestures without recording field contents", async (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  card._config.debug = true;
+  card._talkButton.disabled = true;
+  card._talkButton.title = "HTTPS is required for microphone access";
+  env.key("keydown");
+  assert.match(card._talkTrace.at(-1), /talk button disabled \(HTTPS is required/);
+  card._talkButton.disabled = false;
+  env.key("keydown", {}, [{ localName: "input", value: "private text", matches: () => true }]);
+  assert.match(card._talkTrace.at(-1), /focus inside control input/);
+  assert.doesNotMatch(card._talkTrace.join("\n"), /private text/);
+  env.key("keydown", { ctrlKey: true });
+  assert.match(card._talkTrace.at(-1), /modifier key held/);
+  document.hasFocus = () => false;
+  env.key("keydown");
+  assert.match(card._talkTrace.at(-1), /document does not have focus/);
+  await env.flush();
+  assert.equal(card.micRequests, 0);
+});
+
+test("debug trace retains microphone failures after release and bounds its history", async (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  card._config.debug = true;
+  card._setStatus = () => undefined;
+  card._getMicrophoneStream = async () => {
+    throw Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
+  };
+  env.key("keydown");
+  await env.flush();
+  env.key("keyup");
+  assert.match(card._talkTrace.join("\n"), /Microphone start failed: NotAllowedError: Permission denied/);
+  assert.equal(card._talking, false);
+  for (let i = 0; i < 50; i++) env.key("keyup");
+  assert.equal(card._talkTrace.length, 40);
+});
 
 test("Space leaves typing, other controls and modified shortcuts alone", async (t) => {
   const env = keyboardEnvironment(t);

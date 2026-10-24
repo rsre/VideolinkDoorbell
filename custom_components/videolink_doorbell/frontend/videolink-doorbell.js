@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.60";
+const CARD_VERSION = "0.12.61";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -68,6 +68,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talking = false;
     this._talkRequested = false;
     this._spaceHeld = false;
+    this._talkTrace = [];
     this._muted = true;
     this._mutedBeforeTalk = undefined;
     this._diagnosticTimer = undefined;
@@ -211,6 +212,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._bindHaConnection();
     this._runLifecycle("start stream", () => this._start());
     document.addEventListener("visibilitychange", this._visibilityHandler);
+    document.addEventListener("keydown", this._traceSpaceCapture, true);
     document.addEventListener("keydown", this._spaceKeyDown);
     document.addEventListener("keyup", this._spaceKeyUp, true);
     window.addEventListener("blur", this._windowBlurHandler);
@@ -218,9 +220,11 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   disconnectedCallback() {
     document.removeEventListener("visibilitychange", this._visibilityHandler);
+    document.removeEventListener("keydown", this._traceSpaceCapture, true);
     document.removeEventListener("keydown", this._spaceKeyDown);
     document.removeEventListener("keyup", this._spaceKeyUp, true);
     window.removeEventListener("blur", this._windowBlurHandler);
+    this._traceTalk("Card disconnected; cleaning up talk");
     this._bindHaConnection();
     this._queueHaCleanup("clean up stream");
   }
@@ -281,6 +285,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   _visibilityHandler = () => {
+    this._traceTalk(`Page visibility: ${document.hidden ? "hidden; cleaning up talk" : "visible"}`);
     if (document.hidden) {
       this._runLifecycle("clean up hidden stream", () => this._cleanup());
     } else {
@@ -289,6 +294,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   _windowBlurHandler = () => {
+    this._traceTalk("Window blurred; stopping talk");
     this._runLifecycle("stop talk on window blur", () => this._endTalk());
   };
 
@@ -499,6 +505,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       .catch((error) => {
         const message = error?.message || String(error);
         this._diagnostics = { ...this._diagnostics, lifecycleError: `${operation}: ${message}` };
+        this._traceTalk(`Lifecycle failed (${operation}): ${message}`);
         console.error(`[Videolink] ${operation} failed`, error);
         this._updateDiagnosticsView();
         if (this._config?.debug) this._setStatus(`${operation} failed: ${message}`);
@@ -788,11 +795,16 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _beginTalk = async (event) => {
     event.preventDefault();
+    this._traceTalk(`Talk start requested (${event.type || "unknown gesture"})`);
     if (!window.isSecureContext) {
+      this._traceTalk("Talk start blocked: insecure context (HTTPS required)");
       this._setStatus("HTTPS is required for microphone access");
       return;
     }
-    if (this._talking || this._toneTesting || this._micPending || !this._streamReady || !this._audioSender) return;
+    if (this._talking || this._toneTesting || this._micPending || !this._streamReady || !this._audioSender) {
+      this._traceTalk(`Talk start blocked: talking=${this._talking}, tone=${this._toneTesting}, micPending=${this._micPending}, streamReady=${this._streamReady}, audioSender=${!!this._audioSender}`);
+      return;
+    }
     this._talkRequested = true;
     this._micPending = true;
     this._diagnostics.micRequestedAt = performance.now();
@@ -812,9 +824,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateSoundButton();
     this._updateTalkButton();
     try {
+      this._traceTalk("Requesting microphone permission/capture");
       this._micStream = await this._getMicrophoneStream();
+      this._traceTalk("Microphone stream received");
       this._diagnostics.micPermissionMs = performance.now() - this._diagnostics.micRequestedAt;
       if (!this._talkRequested) {
+        this._traceTalk("Talk cancelled before microphone permission resolved; stopping late tracks");
         this._micStream.getTracks().forEach((track) => track.stop());
         this._micStream = undefined;
         return;
@@ -833,6 +848,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         return;
       }
       if (this._config.talk_mode === "native") {
+        this._traceTalk("Waiting for native talk session");
         await this._ensureNativeTalkSession();
         if (!this._nativeSessionReady || !this._talkRequested) {
           await this._stopMicrophone();
@@ -844,6 +860,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         this._microphoneSource.connect(this._microphoneGain);
         this._microphoneGain.gain.setValueAtTime(1, this._keepaliveContext.currentTime);
       } else {
+        this._traceTalk("Attaching microphone track to WebRTC sender");
         await sender.replaceTrack(track);
       }
       if (!this._talkRequested || sender !== this._audioSender) {
@@ -854,17 +871,20 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.trackAttachMs = this._diagnostics.trackAttachedAt - this._diagnostics.micRequestedAt;
       this._talking = true;
       this._micPending = false;
+      this._traceTalk(`Microphone active (${this._config.talk_mode})`);
       if (this._soundButton) this._soundButton.disabled = true;
       this._updateTalkButton();
       this._updateSoundButton();
       this._updateDiagnosticsView();
     } catch (error) {
+      this._traceTalk(`Microphone start failed: ${error?.name || "Error"}: ${error?.message || error}`);
       this._setStatus(`Microphone unavailable: ${error?.message || error}`);
       this._diagnostics.microphoneError = error?.message || String(error);
       await this._stopMicrophone();
     } finally {
       this._micPending = false;
       this._updateTalkButton();
+      this._updateDiagnosticsView();
     }
   };
 
@@ -946,35 +966,77 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (event.key === "Enter") this._safeEndTalk(event);
   };
 
+  _traceTalk(message) {
+    if (!this._config?.debug) return;
+    this._talkTrace.push(`${new Date().toISOString().slice(11, 23)}Z ${message}`);
+    if (this._talkTrace.length > 40) this._talkTrace.shift();
+    this._updateDiagnosticsView();
+  }
+
+  _talkTargetLabel(node) {
+    // Record control types only, without field contents, IDs or typed text.
+    const tag = node?.localName || node?.nodeName || "unknown";
+    const role = node?.getAttribute?.("role");
+    return `${tag}${role ? `[role=${role}]` : ""}`;
+  }
+
+  _traceSpaceCapture = (event) => {
+    if (!this._config?.debug || event.repeat || (event.code !== "Space" && event.key !== " ")) return;
+    const path = event.composedPath().filter((node) => node.localName || node.nodeName);
+    this._traceTalk(`Space keydown captured: target=${path.slice(0, 8).map((node) => this._talkTargetLabel(node)).join(" > ") || "unknown"}, defaultPrevented=${event.defaultPrevented}`);
+  };
+
   _spaceKeyDown = (event) => {
     if (event.code !== "Space" && event.key !== " ") return;
     if (this._spaceHeld) {
+      if (!event.repeat) this._traceTalk("Space keydown ignored: shortcut already held; waiting for keyup");
       event.preventDefault();
       return;
     }
-    if (event.defaultPrevented || event.repeat || event.isComposing
-      || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey
-      || document.hidden || !document.hasFocus() || !this.isConnected
-      || this._controlsHidden || !this._talkButton || this._talkButton.disabled
-      || !this._talkButton.getClientRects().length
-      || this._talking || this._talkRequested || this._micPending || this._toneTesting) return;
+    let reason;
+    if (event.defaultPrevented) reason = "event already prevented (another card/control may have handled it)";
+    else if (event.repeat) reason = "repeated keydown without a fresh press";
+    else if (event.isComposing) reason = "text composition active";
+    else if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) reason = "modifier key held";
+    else if (document.hidden) reason = "page hidden";
+    else if (!document.hasFocus()) reason = "document does not have focus";
+    else if (!this.isConnected) reason = "card disconnected";
+    else if (this._controlsHidden) reason = "talk controls hidden (video-only card)";
+    else if (!this._talkButton) reason = "talk button missing";
+    else if (this._talkButton.disabled) reason = `talk button disabled (${this._talkButton.title || "unavailable"})`;
+    else if (!this._talkButton.getClientRects().length) reason = "talk button not visible";
+    else if (this._talking || this._talkRequested || this._micPending || this._toneTesting) reason = "talk or test tone already active/pending";
+    if (reason) {
+      if (!event.repeat) this._traceTalk(`Space keydown ignored: ${reason}`);
+      return;
+    }
 
     const path = event.composedPath();
     // Respect controls throughout HA's shadow DOM and target a focused card
     // before falling back to the first available card on the page.
-    if (path.some((node) => node instanceof VideolinkDoorbellCard && node !== this)) return;
-    if (path.some((node) => node !== this._talkButton && (node.isContentEditable
-      || node.matches?.('input, textarea, select, button, a[href], summary, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="button"], [role="slider"], [role="checkbox"], [role="switch"]')))) return;
+    if (path.some((node) => node instanceof VideolinkDoorbellCard && node !== this)) {
+      this._traceTalk("Space keydown ignored: another Videolink card has focus");
+      return;
+    }
+    const control = path.find((node) => node !== this._talkButton && (node.isContentEditable
+      || node.matches?.('input, textarea, select, button, a[href], summary, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="button"], [role="slider"], [role="checkbox"], [role="switch"]')));
+    if (control) {
+      this._traceTalk(`Space keydown ignored: focus inside control ${this._talkTargetLabel(control)}`);
+      return;
+    }
 
     // Claim the gesture synchronously to prevent scrolling and keep another
     // card from opening its microphone for the same key press.
     event.preventDefault();
     this._spaceHeld = true;
+    this._traceTalk("Space keydown accepted; starting talk");
     this._safeBeginTalk(event);
   };
 
   _spaceKeyUp = (event) => {
-    if ((event.code === "Space" || event.key === " ") && this._spaceHeld) {
+    if (event.code !== "Space" && event.key !== " ") return;
+    this._traceTalk(`Space keyup: ${this._spaceHeld ? "stopping talk" : "no held shortcut"}`);
+    if (this._spaceHeld) {
       event.preventDefault();
       this._spaceHeld = false;
       this._safeEndTalk(event);
@@ -982,6 +1044,8 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   async _stopMicrophone() {
+    const wasActive = this._talkRequested || this._spaceHeld || this._talking || this._micPending || !!this._micStream;
+    if (wasActive) this._traceTalk("Stopping microphone and releasing talk shortcut");
     // Native talk resumes listening after a successful PTT. If capture was
     // cancelled or failed, restore the user's previous sound state instead.
     const restoreMuted = this._config?.talk_mode === "native" && this._talking
@@ -996,6 +1060,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._microphoneSource = undefined;
     this._micStream?.getTracks().forEach((track) => track.stop());
     this._talking = false;
+    if (wasActive) this._traceTalk("Microphone tracks stopped");
     if (this._nativeTalking || this._nativeContext) {
       await this._stopNativeTalkCapture();
     }
@@ -1628,7 +1693,11 @@ class VideolinkDoorbellCard extends HTMLElement {
       return `${name}/${rate}/${channelCount}`;
     };
     this._diagnosticsOutput.textContent = [
+      `Card version: ${CARD_VERSION}`,
       `Phase: ${this._diagnostics.phase || "idle"}`,
+      `PTT availability: secure=${!!window.isSecureContext}, streamReady=${this._streamReady}, audioSender=${!!this._audioSender}, controlsHidden=${this._controlsHidden}, buttonDisabled=${value(this._talkButton?.disabled)}`,
+      `PTT state: spaceHeld=${this._spaceHeld}, requested=${this._talkRequested}, micPending=${this._micPending}, talking=${this._talking}`,
+      `Page state: hidden=${value(globalThis.document?.hidden)}, focused=${value(globalThis.document?.hasFocus?.())}`,
       `Incoming audio source: ${this._incomingAudioSource()}`,
       `Outgoing talk path: ${this._config?.talk_mode === "native" ? "Native Baichuan" : "WebRTC / RTSP backchannel"}`,
       `WebRTC audio direction (offer/answer/negotiated): ${value(this._diagnostics.localAudioDirection)} / ${value(this._diagnostics.remoteAudioDirection)} / ${value(this._diagnostics.negotiatedAudioDirection)}`,
@@ -1680,6 +1749,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._diagnostics.microphoneError ? `Microphone error: ${this._diagnostics.microphoneError}` : "",
       this._diagnostics.lifecycleError ? `Lifecycle error: ${this._diagnostics.lifecycleError}` : "",
       this._diagnostics.statsError ? `Stats error: ${this._diagnostics.statsError}` : "",
+      this._config?.debug ? `PTT trace (last 40 events, UTC):\n${this._talkTrace.join("\n") || "No events recorded; press and release Space to trace the shortcut."}` : "",
     ].filter(Boolean).join("\n");
   }
 

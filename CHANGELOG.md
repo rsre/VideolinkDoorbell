@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## Unreleased
+
+- Add a bounded, timestamped PTT trace to the card's debug diagnostics, including
+  captured Space events, shortcut rejection reasons, microphone startup and
+  cleanup. Include card version and current PTT availability and state in copied
+  diagnostics. Bundle dashboard card 0.12.61 with an updated cache version.
+
 ## [0.12.63] - 2026-10-22
 
 - Hold Space anywhere outside text fields and other controls in the active Home
