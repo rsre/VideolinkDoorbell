@@ -2,7 +2,7 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
-## Unreleased
+## [0.12.64] - 2026-10-24
 
 - Add a bounded, timestamped PTT trace to the card's debug diagnostics, including
   captured Space events, shortcut rejection reasons, microphone startup and
