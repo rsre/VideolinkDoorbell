@@ -115,6 +115,7 @@ camera audio can play without a gesture. Browsers that block autoplay still
 show muted video and a crossed speaker icon; its tooltip explains the blocked
 audio. Either kiosk control retries
 camera audio during its normal action; blocked rings are not queued for later.
+Ring sound errors appear in a red warning bar at the bottom of the video feed.
 See the [browser autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay).
 
 To test the ring manually, set `debug: true` and tap **Play ring** in the

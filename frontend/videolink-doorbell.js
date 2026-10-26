@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.13.5";
+const CARD_VERSION = "0.13.6";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -506,7 +506,11 @@ class VideolinkDoorbellCard extends HTMLElement {
         .sound-status svg { display: block; width: 22px; height: 22px; pointer-events: none; }
         .sound-status .sound-muted, .sound-status[data-muted="true"] .sound-waves { display: none; }
         .sound-status[data-muted="true"] .sound-muted { display: inline; }
-        .kiosk-notice, .button-error { padding: 8px 16px 0; font-size: 13px; color: var(--secondary-text-color); }
+        .stage-messages { position: absolute; inset: auto 0 0; z-index: 1; pointer-events: none; }
+        .stage-messages .status { position: static; margin: 0 10px 10px; }
+        .kiosk-notice { padding: 10px 12px; background: #b3261e; color: white;
+          font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+        .button-error { padding: 8px 16px 0; font-size: 13px; }
         .kiosk-notice:empty, .button-error:empty { display: none; }
         .button-error { color: var(--error-color, #db4437); }
         button { border: 0; border-radius: 999px; min-width: 44px; height: 44px; padding: 0 14px;
@@ -543,9 +547,12 @@ class VideolinkDoorbellCard extends HTMLElement {
               <path class="sound-muted" d="m3 3 18 18"/>
             </svg>
           </span>` : ""}
-          <div class="status">Connecting…</div>
+          ${this._kiosk ? `<div class="stage-messages">
+            <div class="status">Connecting…</div>
+            <div class="kiosk-notice" role="alert"></div>
+          </div>` : '<div class="status">Connecting…</div>'}
         </div>`}
-        ${this._kiosk ? '<div class="kiosk-notice" role="status"></div><div class="button-error" role="alert"></div>' : ""}
+        ${this._kiosk ? '<div class="button-error" role="alert"></div>' : ""}
         ${window.isSecureContext || this._controlsHidden ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
         ${this._controlsHidden ? "" : `<div class="controls">
           ${this._kiosk ? "" : '<button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>'}

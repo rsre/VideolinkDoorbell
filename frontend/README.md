@@ -78,6 +78,7 @@ browser for unattended sound. If blocked, the card falls back to muted video
 and shows a crossed speaker icon, with a tooltip explaining the blocked audio;
 either control retries camera audio during its usual action.
 A blocked ring is discarded instead of playing later after a gesture.
+Ring sound errors appear in a red warning bar at the bottom of the video feed.
 
 Set `debug: true` to show a **Play ring** button in **Stream diagnostics**.
 Tap it to test the chime directly, including after automatic audio was blocked.

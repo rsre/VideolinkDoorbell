@@ -4,7 +4,7 @@ All notable changes are documented here. This project follows Semantic Versionin
 
 ## Unreleased
 
-- Add dashboard card 0.13.5 with a kiosk style: video, a ring on first display,
+- Add dashboard card 0.13.6 with a kiosk style: video, a ring on first display,
   hold-to-talk, a configurable Home Assistant button proxy, and read-only mute
   status. Handle blocked autoplay and resume listening after kiosk PTT.
 - Add a **Play ring** debug button to test the kiosk chime with a direct user
@@ -13,6 +13,7 @@ All notable changes are documented here. This project follows Semantic Versionin
   acknowledges it. Stop playback immediately on acknowledgement or card cleanup.
 - Display kiosk audio status as an SVG speaker or crossed speaker over the
   video's top-right corner, with an accessible label and status tooltip.
+- Show ring sound errors in a red warning bar over the bottom of the video feed.
 
 ## [0.12.64] - 2026-10-24
 
