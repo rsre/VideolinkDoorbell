@@ -48,6 +48,42 @@ microphone. Space retains its normal behavior in text fields and other controls.
 If several cards are available, focus the desired card's **Hold to talk** button;
 otherwise, the first available card handles the shortcut.
 
+## Kiosk layout
+
+```yaml
+type: custom:videolink-doorbell
+entity: camera.your_videolink_camera
+card_style: kiosk
+button_entity: button.open_gate
+button_label: Open gate
+```
+
+Shows the video, a read-only SVG speaker icon in the video's top-right corner,
+and two controls:
+**Hold to talk** and a proxy for the configured Home Assistant `button.*`
+entity. The proxy uses `button.press` and defaults to the entity's friendly
+name when `button_label` is omitted. Missing or unavailable buttons are disabled.
+Both controls acknowledge the repeating ring when pressed.
+
+A short two-note ring repeats every two seconds when the card first becomes
+visible, including when a conditional card or popup opens. Pressing PTT or the
+configured button stops it immediately, even if that action later fails. Closing
+the card or hiding the browser tab also stops ringing. Removing and reopening
+the card rings again; state updates, stream reconnects, and returning to the tab
+do not restart it.
+An always-visible card rings on dashboard load, not on subsequent doorbell events.
+Camera audio starts enabled, mutes during PTT by default, and resumes on release.
+There is no mute button. Allow audio autoplay for Home Assistant in the kiosk
+browser for unattended sound. If blocked, the card falls back to muted video
+and shows a crossed speaker icon, with a tooltip explaining the blocked audio;
+either control retries camera audio during its usual action.
+A blocked ring is discarded instead of playing later after a gesture.
+
+Set `debug: true` to show a **Play ring** button in **Stream diagnostics**.
+Tap it to test the chime directly, including after automatic audio was blocked.
+The test ring repeats until you press PTT or the configured button, or close
+the card.
+
 ## Maintain the HACS bundle
 
 Edit `frontend/videolink-doorbell.js`, then run:

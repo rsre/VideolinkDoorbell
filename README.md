@@ -82,6 +82,46 @@ typing or using other controls. With multiple cards, focus the desired card's
 The card also has an independent [source and distribution](frontend/README.md)
 for backend installations that omit automatic card installation.
 
+### Kiosk card
+
+```yaml
+type: custom:videolink-doorbell
+entity: camera.your_videolink_camera
+card_style: kiosk
+button_entity: button.open_gate
+button_label: Open gate
+```
+
+The kiosk style starts the video and repeats a short two-note ring every two
+seconds when the card first becomes visible. Pressing **Hold to talk** or the
+configured button acknowledges the ring and stops it immediately, even if the
+microphone request or button action later fails. Closing the card or hiding the
+browser tab also stops ringing. It rings again if the card is removed and
+reopened; state updates, stream reconnects, and returning to the browser tab do
+not restart it. Use a conditional card or popup to display it when a visitor rings.
+An always-visible kiosk card rings when the dashboard opens, rather than on
+every doorbell event.
+
+Under the video are two buttons: **Hold to talk** (hold to transmit, release to
+stop, with the same Space shortcut) and the configured Home Assistant button.
+The second button calls `button.press`; it is disabled until `button_entity`
+is configured and available. `button_label` defaults to the entity's friendly
+name. Camera audio starts enabled, mutes during PTT by default, and resumes
+on release. A read-only SVG speaker icon in the video's top-right corner shows
+camera audio status, with a crossed speaker when muted. There is no mute button.
+
+Allow audio autoplay for Home Assistant in the kiosk browser so the ring and
+camera audio can play without a gesture. Browsers that block autoplay still
+show muted video and a crossed speaker icon; its tooltip explains the blocked
+audio. Either kiosk control retries
+camera audio during its normal action; blocked rings are not queued for later.
+See the [browser autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay).
+
+To test the ring manually, set `debug: true` and tap **Play ring** in the
+card's **Stream diagnostics** panel. This retries the chime with a direct
+user gesture, including when automatic playback was blocked. The test ring also
+repeats until you press PTT or the configured button, or close the card.
+
 ### Settings
 
 - `title` to set a custom title on the card. If omitted, the camera entity name
@@ -90,6 +130,10 @@ for backend installations that omit automatic card installation.
   - `audio_video` shows both video and audio controls.
   - `video` shows video only.
   - `audio` shows the audio-only intercom with controls.
+  - `kiosk` shows video, mute status, PTT, and a configurable button, and rings
+    until acknowledged when opened.
+- `button_entity` selects the `button.*` entity for the kiosk's second button.
+- `button_label` overrides that button's label.
 - `talk_mode` selects the talkback path (defaults to `rtsp`):
   - `rtsp` uses the WebRTC/RTSP backchannel.
   - `native` uses the experimental native Baichuan protocol.

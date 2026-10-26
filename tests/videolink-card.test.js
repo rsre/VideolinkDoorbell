@@ -275,6 +275,287 @@ test("new cards default to scaled video", () => {
   assert.equal(CardUnderTest.getStubConfig(undefined, ["camera.front_door"]).video_fit, "contain");
 });
 
+test("kiosk style uses video, attempts listening, and exposes a button selector", () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door", card_style: "kiosk", button_entity: "button.gate" });
+  assert.equal(card._kiosk, true);
+  assert.equal(card._audioOnly, false);
+  assert.equal(card._controlsHidden, false);
+  assert.equal(card._muted, false);
+  assert.equal(card.getGridOptions().rows, "auto");
+  const field = CardUnderTest.getConfigForm().schema.find(({ name }) => name === "button_entity");
+  assert.equal(field.selector.entity.domain, "button");
+  assert.throws(() => card.setConfig({ entity: "camera.front_door", button_entity: "switch.gate" }), /button entity/);
+});
+
+test("kiosk rings once on first visible display, and again after remounting", (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  card._config.card_style = "kiosk";
+  let visible = false;
+  let rings = 0;
+  card.getClientRects = () => visible ? [{}] : [];
+  card._playRing = () => { rings += 1; };
+  card._maybeRingKiosk();
+  assert.equal(rings, 0);
+  visible = true;
+  document.hidden = true;
+  card._maybeRingKiosk();
+  assert.equal(rings, 0);
+  document.hidden = false;
+  card._maybeRingKiosk();
+  card._maybeRingKiosk();
+  card._updateTitle = () => undefined;
+  card.hass = {};
+  card._visibilityHandler();
+  assert.equal(rings, 1);
+  card.disconnectedCallback();
+  card.connectedCallback();
+  assert.equal(rings, 2);
+});
+
+test("kiosk chime repeats every two seconds until stopped and ignores late callbacks", (t) => {
+  const previous = window.AudioContext;
+  t.after(() => { window.AudioContext = previous; });
+  const notes = [];
+  let closes = 0;
+  window.AudioContext = class {
+    state = "running";
+    currentTime = 2;
+    destination = {};
+    createOscillator() {
+      const note = { frequency: {}, connect() {}, start(at) { this.startAt = at; }, stop(at) { this.stopAt = at; } };
+      notes.push(note);
+      return note;
+    }
+    createGain() {
+      return { connect() {}, gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } };
+    }
+    close() { closes += 1; return Promise.resolve(); }
+  };
+  const card = new CardUnderTest();
+  card._playRing();
+  assert.deepEqual(notes.map((note) => note.frequency.value), [880, 660]);
+  assert.deepEqual(notes.map((note) => note.startAt), [2, 2.4]);
+  notes[1].onended();
+  assert.deepEqual(notes.map((note) => note.frequency.value), [880, 660, 880, 660]);
+  assert.deepEqual(notes.map((note) => note.startAt), [2, 2.4, 4, 4.4]);
+  assert.equal(closes, 0);
+  card._stopRing();
+  assert.equal(closes, 1);
+  assert.equal(card._ringContext, undefined);
+  notes[3].onended();
+  assert.equal(notes.length, 4, "acknowledged rings must not restart");
+});
+
+test("kiosk waits for viewport intersection and releases the observer on display", (t) => {
+  const env = keyboardEnvironment(t);
+  const card = env.card();
+  card._config.card_style = "kiosk";
+  card.getClientRects = () => [{}];
+  let rings = 0;
+  let observed;
+  let disconnected = 0;
+  const previous = window.IntersectionObserver;
+  t.after(() => { window.IntersectionObserver = previous; });
+  window.IntersectionObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(element) { observed = element; }
+    disconnect() { disconnected += 1; }
+  };
+  card._playRing = () => { rings += 1; };
+  card._observeKioskDisplay();
+  const observer = card._kioskObserver;
+  assert.equal(observed, card);
+  card._maybeRingKiosk();
+  observer.callback([{ isIntersecting: false }]);
+  assert.equal(rings, 0);
+  observer.callback([{ isIntersecting: true }]);
+  assert.equal(rings, 1);
+  assert.equal(disconnected, 1);
+  assert.equal(card._kioskObserver, undefined);
+});
+
+test("blocked kiosk chime is reported and discarded without a delayed ring", (t) => {
+  const previous = window.AudioContext;
+  t.after(() => { window.AudioContext = previous; });
+  let closes = 0;
+  window.AudioContext = class {
+    state = "suspended";
+    close() { closes += 1; return Promise.resolve(); }
+    createOscillator() { assert.fail("must not schedule a blocked ring"); }
+  };
+  const card = new CardUnderTest();
+  card._kioskNotice = {};
+  card._playRing();
+  assert.match(card._kioskNotice.textContent, /Allow audio autoplay/);
+  assert.equal(card._ringContext, undefined);
+  assert.equal(closes, 1);
+});
+
+test("manual ring resumes suspended audio on a user gesture and clears the blocked notice", async (t) => {
+  const previous = window.AudioContext;
+  t.after(() => { window.AudioContext = previous; });
+  const notes = [];
+  let resumes = 0;
+  window.AudioContext = class {
+    state = "suspended";
+    currentTime = 0;
+    destination = {};
+    async resume() { resumes += 1; this.state = "running"; }
+    createOscillator() {
+      const note = { frequency: {}, connect() {}, start() {}, stop() {} };
+      notes.push(note);
+      return note;
+    }
+    createGain() {
+      return { connect() {}, gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } };
+    }
+    close() { return Promise.resolve(); }
+  };
+  const card = new CardUnderTest();
+  card._kioskNotice = {};
+  await card._playRing();
+  assert.match(card._kioskNotice.textContent, /blocked/);
+  assert.equal(resumes, 0);
+  await card._playRing(true);
+  assert.equal(resumes, 1);
+  assert.deepEqual(notes.map((note) => note.frequency.value), [880, 660]);
+  assert.equal(card._kioskNotice.textContent, "");
+  notes[1].onended();
+  assert.equal(notes.length, 4);
+  card._stopRing();
+  assert.equal(card._ringContext, undefined);
+});
+
+for (const action of ["PTT", "configured button"]) {
+  test(`${action} acknowledges the ring before its action completes`, async (t) => {
+    const env = keyboardEnvironment(t);
+    const card = env.card();
+    card._config.card_style = "kiosk";
+    let closes = 0;
+    card._ringContext = { close: async () => { closes += 1; } };
+    if (action === "PTT") {
+      let resolveMic;
+      card._getMicrophoneStream = () => new Promise((resolve) => { resolveMic = resolve; });
+      const talking = card._beginTalk({ preventDefault() {} });
+      assert.equal(card._micPending, true);
+      assert.equal(card._ringContext, undefined);
+      assert.equal(closes, 1);
+      await card._endTalk({ preventDefault() {} });
+      resolveMic({ getTracks: () => [] });
+      await talking;
+    } else {
+      card._config.button_entity = "button.gate";
+      let rejectAction;
+      card._hass = {
+        states: { "button.gate": { state: "unknown" } },
+        callService: () => new Promise((_, reject) => { rejectAction = reject; }),
+      };
+      const pressing = card._pressProxyButton();
+      assert.equal(card._buttonPending, true);
+      assert.equal(card._ringContext, undefined);
+      assert.equal(closes, 1);
+      rejectAction(new Error("Action failed"));
+      await pressing;
+      assert.equal(card._ringContext, undefined, "action failure must not resume ringing");
+    }
+  });
+}
+
+test("closing the card during manual audio resume prevents a late ring", async (t) => {
+  const previous = window.AudioContext;
+  t.after(() => { window.AudioContext = previous; });
+  let resume;
+  window.AudioContext = class {
+    state = "suspended";
+    resume() { return new Promise((resolve) => { resume = resolve; }); }
+    createOscillator() { assert.fail("must not schedule a ring after cleanup"); }
+    close() { return Promise.resolve(); }
+  };
+  const card = new CardUnderTest();
+  const playing = card._playRing(true);
+  card._resetKioskDisplay();
+  resume();
+  await playing;
+  assert.equal(card._ringContext, undefined);
+  assert.equal(card._ringNotice, "");
+});
+
+test("kiosk camera autoplay falls back to muted video with a read-only status", async () => {
+  const card = new CardUnderTest();
+  card._config = { card_style: "kiosk" };
+  card._muted = false;
+  const attributes = new Map();
+  card._soundStatus = { setAttribute: (name, value) => attributes.set(name, value) };
+  let plays = 0;
+  card._video = { play: () => ++plays === 1
+    ? Promise.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" })) : Promise.resolve() };
+  card._remoteStream = {};
+  card._attachRemoteStream();
+  await new Promise(setImmediate);
+  assert.equal(plays, 2);
+  assert.equal(card._video.muted, true);
+  assert.equal(attributes.get("data-muted"), "true");
+  assert.match(attributes.get("aria-label"), /muted.*autoplay blocked/);
+});
+
+test("proxy button presses the configured HA entity once while pending and reports failures", async () => {
+  const card = new CardUnderTest();
+  card._config = { card_style: "kiosk", button_entity: "button.gate" };
+  card._proxyButton = { setAttribute() {} };
+  card._buttonErrorOutput = {};
+  const calls = [];
+  let reject;
+  card._hass = {
+    states: { "button.gate": { state: "unknown", attributes: { friendly_name: "Open gate" } } },
+    callService: (...args) => { calls.push(args); return new Promise((_, fail) => { reject = fail; }); },
+  };
+  card._updateProxyButton();
+  assert.equal(card._proxyButton.textContent, "Open gate");
+  assert.equal(card._proxyButton.disabled, false);
+  const press = card._pressProxyButton();
+  await card._pressProxyButton();
+  assert.deepEqual(calls, [["button", "press", { entity_id: "button.gate" }]]);
+  assert.equal(card._proxyButton.disabled, true);
+  reject(new Error("Permission denied"));
+  await press;
+  assert.match(card._buttonErrorOutput.textContent, /Permission denied/);
+  assert.equal(card._proxyButton.disabled, false);
+  card._hass.callService = async (...args) => { calls.push(args); };
+  await card._pressProxyButton();
+  assert.equal(card._buttonErrorOutput.textContent, "");
+  card._hass.states["button.gate"].state = "unavailable";
+  card._updateProxyButton();
+  await card._pressProxyButton();
+  assert.equal(card._proxyButton.disabled, true);
+  assert.equal(calls.length, 2);
+});
+
+for (const mode of ["rtsp", "native"]) {
+  test(`kiosk ${mode} PTT mutes while held and resumes listening on release`, async (t) => {
+    const env = keyboardEnvironment(t);
+    const card = env.card(mode);
+    card._config.card_style = "kiosk";
+    card._video = { muted: true };
+    card._muted = true;
+    card._audioBlocked = true;
+    env.key("keydown");
+    await env.flush();
+    assert.equal(card._talking, true);
+    assert.equal(card._muted, true);
+    assert.equal(card._video.muted, true);
+    assert.equal(card._audioBlocked, false);
+    env.key("keyup");
+    await env.flush();
+    assert.equal(card._talking, false);
+    assert.equal(card._muted, false);
+    assert.equal(card._video.muted, false);
+    assert.equal(card.tracks[0].readyState, "ended");
+  });
+}
+
 test("audio-only packetization preserves valid SDP line termination", () => {
   const card = new CardUnderTest();
   const offer = { type: "offer", sdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=recvonly\r\n" };

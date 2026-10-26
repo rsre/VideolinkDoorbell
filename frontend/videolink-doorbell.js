@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.12.61";
+const CARD_VERSION = "0.13.5";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -71,6 +71,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talkTrace = [];
     this._muted = true;
     this._mutedBeforeTalk = undefined;
+    this._audioBlocked = false;
+    this._kioskDisplayed = false;
+    this._kioskObserver = undefined;
+    this._kioskInView = false;
+    this._ringContext = undefined;
+    this._ringNotice = "";
+    this._buttonPending = false;
+    this._buttonError = "";
     this._diagnosticTimer = undefined;
     this._collectingStats = false;
     this._diagnosticStatsSample = undefined;
@@ -101,7 +109,10 @@ class VideolinkDoorbellCard extends HTMLElement {
           { value: "video", label: "Video only" },
           { value: "audio", label: "Audio only" },
           { value: "audio_video", label: "Audio and video" },
+          { value: "kiosk", label: "Kiosk" },
         ] } } },
+        { name: "button_entity", selector: { entity: { domain: "button" } } },
+        { name: "button_label", selector: { text: {} } },
         { name: "enable_popup", selector: { boolean: {} } },
         { name: "talk_mode", selector: { select: { mode: "dropdown", options: [
           { value: "rtsp", label: "RTSP" },
@@ -115,6 +126,8 @@ class VideolinkDoorbellCard extends HTMLElement {
         title: "Title",
         video_fit: "Video fit",
         card_style: "Card style",
+        button_entity: "Kiosk button entity",
+        button_label: "Kiosk button label",
         enable_popup: "Enable video popup",
         talk_mode: "Talk mode",
         mute_while_talking: "Mute while talking",
@@ -127,9 +140,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     if (!config.entity || !config.entity.startsWith("camera.")) {
       throw new Error("A camera entity is required");
     }
+    if (config.button_entity && !/^button\.[a-z0-9_]+$/.test(config.button_entity)) {
+      throw new Error("The kiosk button must be a button entity");
+    }
     const previous = this._config;
     const changed = previous?.entity !== config.entity;
-    const cardStyle = ["video", "audio", "audio_video"].includes(config.card_style)
+    const cardStyle = ["video", "audio", "audio_video", "kiosk"].includes(config.card_style)
       ? config.card_style
       : "audio_video";
     const mediaChanged = changed || previous?.card_style !== cardStyle;
@@ -153,7 +169,14 @@ class VideolinkDoorbellCard extends HTMLElement {
       video_fit: videoFit,
       talk_mode: talkMode,
     };
-    if (!previous || changed) this._muted = true;
+    if (!previous || changed || (previous.card_style === "kiosk") !== (cardStyle === "kiosk")) {
+      this._muted = cardStyle !== "kiosk";
+      this._audioBlocked = false;
+    }
+    if (changed || previous?.card_style !== cardStyle) {
+      this._resetKioskDisplay();
+    }
+    if (previous?.button_entity !== config.button_entity) this._buttonError = "";
     if ((changed && previous) || controlsHidden || talkModeChanged || nativeTalkDisabled) {
       this._runLifecycle("stop talk on card change", async () => {
         await this._stopMicrophone();
@@ -163,6 +186,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       });
     }
     this._render();
+    this._observeKioskDisplay();
     if (this._config.debug && !previous?.debug && this._nativeMixFallbackReason) {
       this._noteNativeMixFallback(this._nativeMixFallbackReason);
     }
@@ -181,6 +205,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._updateTitle();
     this._updateTalkButton();
+    this._updateProxyButton();
   }
 
   getCardSize() {
@@ -189,6 +214,10 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   get _audioOnly() {
     return this._config?.card_style === "audio";
+  }
+
+  get _kiosk() {
+    return this._config?.card_style === "kiosk";
   }
 
   get _titleVisible() {
@@ -209,6 +238,7 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   connectedCallback() {
     this._render();
+    this._observeKioskDisplay();
     this._bindHaConnection();
     this._runLifecycle("start stream", () => this._start());
     document.addEventListener("visibilitychange", this._visibilityHandler);
@@ -219,6 +249,7 @@ class VideolinkDoorbellCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._resetKioskDisplay();
     document.removeEventListener("visibilitychange", this._visibilityHandler);
     document.removeEventListener("keydown", this._traceSpaceCapture, true);
     document.removeEventListener("keydown", this._spaceKeyDown);
@@ -258,10 +289,12 @@ class VideolinkDoorbellCard extends HTMLElement {
     // HA already disposes subscriptions and their native owners on socket loss.
     // Old command IDs must never be unsubscribed on a newly opened socket.
     this._socketDisconnected = true;
+    this._updateProxyButton();
     this._queueHaCleanup("clean up lost HA connection");
   };
 
   _haReady = () => {
+    this._updateProxyButton();
     this._runLifecycle("restore HA connection", () => this._start());
   };
 
@@ -287,8 +320,10 @@ class VideolinkDoorbellCard extends HTMLElement {
   _visibilityHandler = () => {
     this._traceTalk(`Page visibility: ${document.hidden ? "hidden; cleaning up talk" : "visible"}`);
     if (document.hidden) {
+      this._stopRing();
       this._runLifecycle("clean up hidden stream", () => this._cleanup());
     } else {
+      this._maybeRingKiosk();
       this._runLifecycle("restart visible stream", () => this._start());
     }
   };
@@ -296,6 +331,147 @@ class VideolinkDoorbellCard extends HTMLElement {
   _windowBlurHandler = () => {
     this._traceTalk("Window blurred; stopping talk");
     this._runLifecycle("stop talk on window blur", () => this._endTalk());
+  };
+
+  _resetKioskDisplay() {
+    this._kioskObserver?.disconnect();
+    this._kioskObserver = undefined;
+    this._kioskInView = false;
+    this._kioskDisplayed = false;
+    this._ringNotice = "";
+    this._stopRing();
+  }
+
+  _observeKioskDisplay() {
+    if (!this._kiosk || !this.isConnected || this._kioskDisplayed || this._kioskObserver) return;
+    if (window.IntersectionObserver) {
+      this._kioskObserver = new window.IntersectionObserver((entries) => {
+        this._kioskInView = entries.some((entry) => entry.isIntersecting);
+        if (this._kioskInView) this._maybeRingKiosk();
+      });
+      this._kioskObserver.observe(this);
+    } else {
+      this._maybeRingKiosk();
+    }
+  }
+
+  _maybeRingKiosk() {
+    if (!this._kiosk || !this.isConnected || this._kioskDisplayed || document.hidden
+      || (this._kioskObserver && !this._kioskInView)
+      || !this.getClientRects().length) return;
+    this._kioskDisplayed = true;
+    this._kioskObserver?.disconnect();
+    this._kioskObserver = undefined;
+    this._playRing();
+  }
+
+  async _playRing(fromUserGesture = false) {
+    this._stopRing();
+    let context;
+    try {
+      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextConstructor) throw new Error("Ring sound is unavailable in this browser.");
+      context = new AudioContextConstructor();
+      this._ringContext = context;
+      if (fromUserGesture && context.state === "suspended") {
+        await context.resume();
+        // The card may have closed or another ring may have replaced this one.
+        if (this._ringContext !== context) return;
+      }
+      // A suspended context would play a stale ring on a later user gesture.
+      if (context.state !== "running") {
+        throw new Error("Ring sound blocked. Allow audio autoplay in the kiosk browser.");
+      }
+      this._scheduleRing(context);
+      this._ringNotice = "";
+    } catch (error) {
+      if (context && this._ringContext !== context) return;
+      this._ringNotice = error?.message || "Ring sound could not be played.";
+      this._stopRing();
+    }
+    this._updateKioskNotice();
+  }
+
+  _scheduleRing(context, startAt = context.currentTime) {
+    if (this._ringContext !== context) return;
+    for (const [index, frequency] of [880, 660].entries()) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = startAt + index * 0.4;
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.2, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.55);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      if (index === 1) oscillator.onended = () => {
+        this._scheduleRing(context, Math.max(context.currentTime, startAt + 2));
+      };
+      oscillator.start(start);
+      oscillator.stop(start + 0.56);
+    }
+  }
+
+  _stopRing() {
+    const context = this._ringContext;
+    this._ringContext = undefined;
+    if (context) context.close().catch(() => undefined);
+  }
+
+  _updateKioskNotice() {
+    if (this._kioskNotice) this._kioskNotice.textContent = this._ringNotice;
+    if (this._buttonErrorOutput) this._buttonErrorOutput.textContent = this._buttonError;
+  }
+
+  _unlockKioskAudio() {
+    if (!this._kiosk) return;
+    this._stopRing();
+    if (!this._talkRequested && !this._micPending && !this._talking) {
+      this._muted = false;
+      this._audioBlocked = false;
+      this._prepareNativeMixPlayback(true);
+      this._attachRemoteStream();
+      this._updateSoundButton();
+    }
+  }
+
+  _proxyButtonAvailable() {
+    const state = this._hass?.states?.[this._config?.button_entity];
+    return Boolean(state && state.state !== "unavailable" && this._hass?.callService
+      && this._hass.connection?.connected !== false);
+  }
+
+  _updateProxyButton() {
+    if (!this._proxyButton) return;
+    const entity = this._config.button_entity;
+    const state = this._hass?.states?.[entity];
+    const label = this._config.button_label || state?.attributes?.friendly_name || entity || "Configure button";
+    this._proxyButton.textContent = this._buttonPending ? "Sending…" : label;
+    this._proxyButton.disabled = this._buttonPending || !this._proxyButtonAvailable();
+    this._proxyButton.title = !entity ? "Select a button entity in the card settings"
+      : !this._proxyButtonAvailable() ? "Button entity unavailable" : label;
+    this._proxyButton.setAttribute("aria-busy", String(this._buttonPending));
+  }
+
+  _pressProxyButton = async () => {
+    if (this._buttonPending || !this._proxyButtonAvailable()) return;
+    this._unlockKioskAudio();
+    const entity = this._config.button_entity;
+    this._buttonPending = true;
+    this._buttonError = "";
+    this._updateProxyButton();
+    this._updateKioskNotice();
+    try {
+      await this._hass.callService("button", "press", { entity_id: entity });
+    } catch (error) {
+      if (this._config.button_entity === entity) {
+        this._buttonError = `Button action failed: ${error?.message || error}`;
+      }
+    } finally {
+      this._buttonPending = false;
+      this._updateProxyButton();
+      this._updateKioskNotice();
+    }
   };
 
   _render() {
@@ -322,6 +498,17 @@ class VideolinkDoorbellCard extends HTMLElement {
           color: var(--warning-color, #fbd150); background: color-mix(in srgb, var(--warning-color, #fbd150) 14%, transparent);
           font-size: 13px; line-height: 1.4; }
         .controls { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; }
+        .kiosk .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .kiosk .controls button { min-width: 0; min-height: 56px; height: auto; padding: 12px; overflow-wrap: anywhere; }
+        .sound-status { position: absolute; top: 10px; right: 10px; z-index: 1;
+          display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%;
+          color: white; background: rgba(0,0,0,.68); }
+        .sound-status svg { display: block; width: 22px; height: 22px; pointer-events: none; }
+        .sound-status .sound-muted, .sound-status[data-muted="true"] .sound-waves { display: none; }
+        .sound-status[data-muted="true"] .sound-muted { display: inline; }
+        .kiosk-notice, .button-error { padding: 8px 16px 0; font-size: 13px; color: var(--secondary-text-color); }
+        .kiosk-notice:empty, .button-error:empty { display: none; }
+        .button-error { color: var(--error-color, #db4437); }
         button { border: 0; border-radius: 999px; min-width: 44px; height: 44px; padding: 0 14px;
           background: var(--secondary-background-color); color: var(--primary-text-color); cursor: pointer;
           touch-action: none; user-select: none; font: inherit; }
@@ -333,29 +520,42 @@ class VideolinkDoorbellCard extends HTMLElement {
           animation: spin .8s linear infinite; }
         .talk.active { background: var(--error-color, #db4437); transform: scale(.97); }
         .talk:disabled { opacity: .55; cursor: wait; }
+        .proxy:disabled { opacity: .55; cursor: default; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .diagnostics { margin: 0 12px 12px; padding: 8px 10px; border-radius: 8px;
           background: var(--secondary-background-color); color: var(--secondary-text-color); font-size: 12px; }
         .diagnostics summary { cursor: pointer; color: var(--primary-text-color); font-weight: 500; }
         .diagnostics pre { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 monospace;
           user-select: text; -webkit-user-select: text; cursor: text; }
-        .copy-diagnostics { min-width: 0; height: 32px; padding: 0 12px; font-size: 12px; }
+        .copy-diagnostics, .play-ring { min-width: 0; height: 32px; padding: 0 12px; font-size: 12px; }
       </style>
-      <ha-card class="${audioOnly ? "audio-only" : ""}">
+      <ha-card class="${audioOnly ? "audio-only" : this._kiosk ? "kiosk" : ""}">
         ${this._titleVisible ? '<div class="header"></div>' : ""}
         ${audioOnly ? `<audio autoplay playsinline muted></audio>
         <div class="status">Connecting…</div>` : `<div class="stage ${this._config.enable_popup ? "popup-enabled" : ""} ${this._config.video_fit === "full" ? "fit-full" : ""}"
           ${this._config.enable_popup ? 'role="button" tabindex="0" aria-label="Open camera stream"' : ""}>
           <video autoplay playsinline muted></video>
+          ${this._kiosk ? `<span class="sound-status" role="img" aria-live="polite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M11 5 6 9H3v6h3l5 4Z"/>
+              <path class="sound-waves" d="M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/>
+              <path class="sound-muted" d="m3 3 18 18"/>
+            </svg>
+          </span>` : ""}
           <div class="status">Connecting…</div>
         </div>`}
+        ${this._kiosk ? '<div class="kiosk-notice" role="status"></div><div class="button-error" role="alert"></div>' : ""}
         ${window.isSecureContext || this._controlsHidden ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
         ${this._controlsHidden ? "" : `<div class="controls">
-          <button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>
+          ${this._kiosk ? "" : '<button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>'}
           <button class="talk" type="button" aria-label="Hold to talk" aria-keyshortcuts="Space Enter">Hold to talk</button>
-          ${this._config.talk_mode === "native" && this._config.debug ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
+          ${this._kiosk ? '<button class="proxy" type="button"></button>' : ""}
+          ${!this._kiosk && this._config.talk_mode === "native" && this._config.debug ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
-        ${this._config.debug ? '<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre><button class="copy-diagnostics" type="button">Copy diagnostics</button></details>' : ""}
+        ${this._config.debug ? `<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre>
+          ${this._kiosk ? '<button class="play-ring" type="button">Play ring</button>' : ""}
+          <button class="copy-diagnostics" type="button">Copy diagnostics</button></details>` : ""}
       </ha-card>`;
 
     this._video = this.shadowRoot.querySelector("video, audio");
@@ -364,9 +564,14 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._status = this.shadowRoot.querySelector(".status");
     this._talkButton = this.shadowRoot.querySelector(".talk");
     this._soundButton = this.shadowRoot.querySelector(".sound");
+    this._soundStatus = this.shadowRoot.querySelector(".sound-status");
+    this._kioskNotice = this.shadowRoot.querySelector(".kiosk-notice");
+    this._buttonErrorOutput = this.shadowRoot.querySelector(".button-error");
+    this._proxyButton = this.shadowRoot.querySelector(".proxy");
     this._toneButton = this.shadowRoot.querySelector(".tone");
     this._diagnosticsOutput = this.shadowRoot.querySelector(".diagnostics pre");
     this._copyDiagnosticsButton = this.shadowRoot.querySelector(".copy-diagnostics");
+    this.shadowRoot.querySelector(".play-ring")?.addEventListener("click", () => this._playRing(true));
 
     this._talkButton?.addEventListener("pointerdown", this._safeBeginTalk);
     this._talkButton?.addEventListener("pointerup", this._safeEndTalk);
@@ -377,6 +582,7 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._talkButton?.addEventListener("keydown", this._talkKeyDown);
     this._talkButton?.addEventListener("keyup", this._talkKeyUp);
     this._soundButton?.addEventListener("click", this._toggleSound);
+    this._proxyButton?.addEventListener("click", this._pressProxyButton);
     this._toneButton?.addEventListener("click", (event) => {
       this._runLifecycle("send test tone", () => this._sendTestTone(event));
     });
@@ -392,6 +598,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     this._updateTitle();
     this._updateSoundButton();
+    this._updateProxyButton();
+    this._updateKioskNotice();
     this._updateTalkButton();
     this._updateDiagnosticsView();
     if (this._config.debug && this._peer) this._startDiagnostics();
@@ -400,17 +608,21 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _attachRemoteStream() {
     if (!this._video || !this._remoteStream) return;
-    this._video.srcObject = this._remoteStream;
-    this._video.muted = this._muted || this._nativeUsesMix;
-    this._video.play().catch(() => {
+    const video = this._video;
+    const stream = this._remoteStream;
+    video.srcObject = stream;
+    video.muted = this._muted || this._nativeUsesMix;
+    video.play().catch((error) => {
+      if (video !== this._video || stream !== this._remoteStream || error?.name === "AbortError") return;
       if (!this._muted) {
         this._muted = true;
-        this._video.muted = true;
+        this._audioBlocked = error?.name === "NotAllowedError";
+        video.muted = true;
         if (this._nativePlaybackGain) this._nativePlaybackGain.gain.value = 0;
         this._updateSoundButton();
         this._updateDiagnosticsView();
-        this._setStatus("Tap the speaker button to enable audio");
-        this._video.play().catch(() => undefined);
+        if (!this._kiosk) this._setStatus("Tap the speaker button to enable audio");
+        video.play().catch(() => undefined);
       }
     });
   }
@@ -805,6 +1017,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       this._traceTalk(`Talk start blocked: talking=${this._talking}, tone=${this._toneTesting}, micPending=${this._micPending}, streamReady=${this._streamReady}, audioSender=${!!this._audioSender}`);
       return;
     }
+    this._unlockKioskAudio();
     this._talkRequested = true;
     this._micPending = true;
     this._diagnostics.micRequestedAt = performance.now();
@@ -1046,9 +1259,9 @@ class VideolinkDoorbellCard extends HTMLElement {
   async _stopMicrophone() {
     const wasActive = this._talkRequested || this._spaceHeld || this._talking || this._micPending || !!this._micStream;
     if (wasActive) this._traceTalk("Stopping microphone and releasing talk shortcut");
-    // Native talk resumes listening after a successful PTT. If capture was
+    // Native and kiosk talk resume listening after a successful PTT. If capture was
     // cancelled or failed, restore the user's previous sound state instead.
-    const restoreMuted = this._config?.talk_mode === "native" && this._talking
+    const restoreMuted = (this._config?.talk_mode === "native" || this._kiosk) && this._talking
       ? false
       : this._mutedBeforeTalk;
     this._talkRequested = false;
@@ -1074,6 +1287,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       if (this._nativePlaybackGain) {
         this._nativePlaybackGain.gain.value = this._nativeUsesMix && !restoreMuted ? 1 : 0;
       }
+      if (this._kiosk && !restoreMuted) this._attachRemoteStream();
     }
     if (this._soundButton) this._soundButton.disabled = false;
     this._updateSoundButton();
@@ -1527,6 +1741,14 @@ class VideolinkDoorbellCard extends HTMLElement {
   };
 
   _updateSoundButton() {
+    if (this._soundStatus) {
+      const label = this._muted
+        ? this._audioBlocked ? "Camera audio muted — autoplay blocked" : "Camera audio muted"
+        : "Camera audio on";
+      this._soundStatus.setAttribute("data-muted", String(this._muted));
+      this._soundStatus.setAttribute("aria-label", label);
+      this._soundStatus.setAttribute("title", label);
+    }
     if (!this._soundButton) return;
     this._soundButton.textContent = this._muted ? "🔇" : "🔊";
     this._soundButton.title = this._muted ? "Enable camera audio" : "Mute camera audio";
