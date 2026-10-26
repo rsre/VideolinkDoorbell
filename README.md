@@ -90,10 +90,12 @@ entity: camera.your_videolink_camera
 card_style: kiosk
 button_entity: button.open_gate
 button_label: Open gate
+ring_duration: 120
 ```
 
 The kiosk style starts the video and repeats a short two-note ring every two
-seconds when the card first becomes visible. Pressing **Hold to talk** or the
+seconds when the card first becomes visible, for up to two minutes by default.
+Set `ring_duration` to change this limit in seconds. Pressing **Hold to talk** or the
 configured button acknowledges the ring and stops it immediately, even if the
 microphone request or button action later fails. Closing the card or hiding the
 browser tab also stops ringing. It rings again if the card is removed and
@@ -121,7 +123,8 @@ See the [browser autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Me
 To test the ring manually, set `debug: true` and tap **Play ring** in the
 card's **Stream diagnostics** panel. This retries the chime with a direct
 user gesture, including when automatic playback was blocked. The test ring also
-repeats until you press PTT or the configured button, or close the card.
+repeats for `ring_duration` seconds, or until you press PTT or the configured
+button, or close the card.
 
 ### Settings
 
@@ -132,9 +135,11 @@ repeats until you press PTT or the configured button, or close the card.
   - `video` shows video only.
   - `audio` shows the audio-only intercom with controls.
   - `kiosk` shows video, mute status, PTT, and a configurable button, and rings
-    until acknowledged when opened.
+    until acknowledged or the ring duration expires when opened.
 - `button_entity` selects the `button.*` entity for the kiosk's second button.
 - `button_label` overrides that button's label.
+- `ring_duration` sets the maximum kiosk ringing time in whole seconds
+  (default: `120`, minimum: `1`). PTT and the configured button stop it sooner.
 - `talk_mode` selects the talkback path (defaults to `rtsp`):
   - `rtsp` uses the WebRTC/RTSP backchannel.
   - `native` uses the experimental native Baichuan protocol.

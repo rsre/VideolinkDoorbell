@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.13.6";
+const CARD_VERSION = "0.13.7";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -76,6 +76,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._kioskObserver = undefined;
     this._kioskInView = false;
     this._ringContext = undefined;
+    this._ringTimeout = undefined;
+    this._ringDeadline = undefined;
     this._ringNotice = "";
     this._buttonPending = false;
     this._buttonError = "";
@@ -113,6 +115,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         ] } } },
         { name: "button_entity", selector: { entity: { domain: "button" } } },
         { name: "button_label", selector: { text: {} } },
+        { name: "ring_duration", default: 120, selector: { number: { min: 1, step: 1, mode: "box", unit_of_measurement: "s" } } },
         { name: "enable_popup", selector: { boolean: {} } },
         { name: "talk_mode", selector: { select: { mode: "dropdown", options: [
           { value: "rtsp", label: "RTSP" },
@@ -128,6 +131,7 @@ class VideolinkDoorbellCard extends HTMLElement {
         card_style: "Card style",
         button_entity: "Kiosk button entity",
         button_label: "Kiosk button label",
+        ring_duration: "Kiosk ring duration (seconds)",
         enable_popup: "Enable video popup",
         talk_mode: "Talk mode",
         mute_while_talking: "Mute while talking",
@@ -142,6 +146,10 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
     if (config.button_entity && !/^button\.[a-z0-9_]+$/.test(config.button_entity)) {
       throw new Error("The kiosk button must be a button entity");
+    }
+    const ringDuration = config.ring_duration ?? 120;
+    if (!Number.isInteger(ringDuration) || ringDuration < 1 || ringDuration > 2147483) {
+      throw new Error("Ring duration must be a whole number of seconds between 1 and 2147483");
     }
     const previous = this._config;
     const changed = previous?.entity !== config.entity;
@@ -168,6 +176,7 @@ class VideolinkDoorbellCard extends HTMLElement {
       card_style: cardStyle,
       video_fit: videoFit,
       talk_mode: talkMode,
+      ring_duration: ringDuration,
     };
     if (!previous || changed || (previous.card_style === "kiosk") !== (cardStyle === "kiosk")) {
       this._muted = cardStyle !== "kiosk";
@@ -382,6 +391,11 @@ class VideolinkDoorbellCard extends HTMLElement {
       if (context.state !== "running") {
         throw new Error("Ring sound blocked. Allow audio autoplay in the kiosk browser.");
       }
+      const duration = this._config?.ring_duration ?? 120;
+      this._ringDeadline = context.currentTime + duration;
+      this._ringTimeout = window.setTimeout(() => {
+        if (this._ringContext === context) this._stopRing();
+      }, duration * 1000);
       this._scheduleRing(context);
       this._ringNotice = "";
     } catch (error) {
@@ -394,10 +408,12 @@ class VideolinkDoorbellCard extends HTMLElement {
 
   _scheduleRing(context, startAt = context.currentTime) {
     if (this._ringContext !== context) return;
+    const deadline = this._ringDeadline;
     for (const [index, frequency] of [880, 660].entries()) {
+      const start = startAt + index * 0.4;
+      if (start >= deadline) continue;
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      const start = startAt + index * 0.4;
       oscillator.frequency.value = frequency;
       gain.gain.setValueAtTime(0, start);
       gain.gain.linearRampToValueAtTime(0.2, start + 0.01);
@@ -408,11 +424,14 @@ class VideolinkDoorbellCard extends HTMLElement {
         this._scheduleRing(context, Math.max(context.currentTime, startAt + 2));
       };
       oscillator.start(start);
-      oscillator.stop(start + 0.56);
+      oscillator.stop(Math.min(start + 0.56, deadline));
     }
   }
 
   _stopRing() {
+    if (this._ringTimeout !== undefined) window.clearTimeout(this._ringTimeout);
+    this._ringTimeout = undefined;
+    this._ringDeadline = undefined;
     const context = this._ringContext;
     this._ringContext = undefined;
     if (context) context.close().catch(() => undefined);

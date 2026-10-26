@@ -56,6 +56,7 @@ entity: camera.your_videolink_camera
 card_style: kiosk
 button_entity: button.open_gate
 button_label: Open gate
+ring_duration: 120
 ```
 
 Shows the video, a read-only SVG speaker icon in the video's top-right corner,
@@ -66,7 +67,9 @@ name when `button_label` is omitted. Missing or unavailable buttons are disabled
 Both controls acknowledge the repeating ring when pressed.
 
 A short two-note ring repeats every two seconds when the card first becomes
-visible, including when a conditional card or popup opens. Pressing PTT or the
+visible, including when a conditional card or popup opens. It stops after
+`ring_duration` seconds (default: `120`, minimum: `1`; whole seconds only).
+Pressing PTT or the
 configured button stops it immediately, even if that action later fails. Closing
 the card or hiding the browser tab also stops ringing. Removing and reopening
 the card rings again; state updates, stream reconnects, and returning to the tab
@@ -82,8 +85,8 @@ Ring sound errors appear in a red warning bar at the bottom of the video feed.
 
 Set `debug: true` to show a **Play ring** button in **Stream diagnostics**.
 Tap it to test the chime directly, including after automatic audio was blocked.
-The test ring repeats until you press PTT or the configured button, or close
-the card.
+The test ring uses the same duration limit and stops sooner if you press PTT
+or the configured button, or close the card.
 
 ## Maintain the HACS bundle
 

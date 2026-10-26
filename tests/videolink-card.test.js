@@ -9,7 +9,7 @@ global.HTMLElement = class {
   }
 };
 global.customElements = { get: () => undefined, define: () => undefined };
-global.window = { customCards: [] };
+global.window = { customCards: [], setTimeout, clearTimeout };
 
 const source = fs.readFileSync(
   "frontend/videolink-doorbell.js",
@@ -20,7 +20,7 @@ vm.runInThisContext(`${source}\nglobal.CardUnderTest = VideolinkDoorbellCard;`);
 function keyboardEnvironment(t) {
   const previousWindow = global.window;
   const previousDocument = global.document;
-  global.window = Object.assign(new EventTarget(), { isSecureContext: true });
+  global.window = Object.assign(new EventTarget(), { isSecureContext: true, setTimeout, clearTimeout });
   global.document = Object.assign(new EventTarget(), { hidden: false, hasFocus: () => true });
   const cards = [];
   t.after(async () => {
@@ -314,6 +314,80 @@ test("kiosk rings once on first visible display, and again after remounting", (t
   card.connectedCallback();
   assert.equal(rings, 2);
 });
+
+test("kiosk ring duration defaults to two minutes and accepts whole seconds", () => {
+  const card = new CardUnderTest();
+  card._render = () => undefined;
+  card.setConfig({ entity: "camera.front_door", card_style: "kiosk" });
+  assert.equal(card._config.ring_duration, 120);
+  card.setConfig({ entity: "camera.front_door", card_style: "kiosk", ring_duration: 30 });
+  assert.equal(card._config.ring_duration, 30);
+  const field = CardUnderTest.getConfigForm().schema.find(({ name }) => name === "ring_duration");
+  assert.equal(field.default, 120);
+  assert.equal(field.selector.number.unit_of_measurement, "s");
+  for (const ring_duration of [0, -1, 1.5, "30", Infinity, NaN, 2147484]) {
+    assert.throws(() => card.setConfig({ entity: "camera.front_door", ring_duration }), /Ring duration/);
+  }
+});
+
+for (const duration of [undefined, 3]) {
+  test(`ring stops after ${duration ?? 120} seconds and clips notes to its deadline`, async (t) => {
+    const previousContext = window.AudioContext;
+    const previousSetTimeout = window.setTimeout;
+    const previousClearTimeout = window.clearTimeout;
+    t.after(() => {
+      window.AudioContext = previousContext;
+      window.setTimeout = previousSetTimeout;
+      window.clearTimeout = previousClearTimeout;
+    });
+    let timer;
+    let cleared = 0;
+    let closes = 0;
+    const notes = [];
+    window.setTimeout = (callback, delay) => { timer = { callback, delay }; return 7; };
+    window.clearTimeout = (id) => { assert.equal(id, 7); cleared += 1; };
+    window.AudioContext = class {
+      state = "running";
+      currentTime = 10;
+      destination = {};
+      createOscillator() {
+        const note = { frequency: {}, connect() {}, start(at) { this.startAt = at; }, stop(at) { this.stopAt = at; } };
+        notes.push(note);
+        return note;
+      }
+      createGain() {
+        return { connect() {}, gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } };
+      }
+      close() { closes += 1; return Promise.resolve(); }
+    };
+    const card = new CardUnderTest();
+    card._config = { card_style: "kiosk", ring_duration: duration };
+    await card._playRing();
+    const context = card._ringContext;
+    const deadline = 10 + (duration ?? 120);
+    assert.equal(timer.delay, (duration ?? 120) * 1000);
+    assert.equal(card._ringDeadline, deadline);
+    card._scheduleRing(context, deadline - 0.5);
+    assert.equal(notes.at(-1).stopAt, deadline, "last note cannot exceed the configured duration");
+    const count = notes.length;
+    card._scheduleRing(context, deadline);
+    assert.equal(notes.length, count, "no notes may start after the deadline");
+    timer.callback();
+    assert.equal(card._ringContext, undefined);
+    assert.equal(card._ringTimeout, undefined);
+    assert.equal(closes, 1);
+    assert.equal(cleared, 1);
+    notes.at(-1).onended();
+    assert.equal(notes.length, count, "late callbacks must not restart an expired ring");
+    const expiredTimer = timer;
+    await card._playRing(true);
+    const restartedContext = card._ringContext;
+    expiredTimer.callback();
+    assert.equal(card._ringContext, restartedContext, "an old timeout must not stop a new ring");
+    card._stopRing();
+    assert.equal(cleared, 2, "acknowledgement clears the new timeout");
+  });
+}
 
 test("kiosk chime repeats every two seconds until stopped and ignores late callbacks", (t) => {
   const previous = window.AudioContext;
