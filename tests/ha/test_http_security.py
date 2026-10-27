@@ -3,7 +3,7 @@
 import ipaddress
 import ssl
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from aiohttp import ClientSession, TCPConnector, web
@@ -21,7 +21,7 @@ from custom_components.videolink_doorbell.api import VideolinkClient, VideolinkE
 def tls_contexts(tmp_path):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
         .public_key(key.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
@@ -81,6 +81,6 @@ async def test_compressed_decoded_response_is_bounded(snapshot, socket_enabled):
         client = Client(session, "127.0.0.1", "user", "dummy")
         client.MAX_JSON_BYTES = client.MAX_SNAPSHOT_BYTES = 100
         client._token = "dummy-token"
-        client._token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        client._token_expires = datetime.now(UTC) + timedelta(hours=1)
         with pytest.raises(VideolinkError, match="size limit"):
             await (client.snapshot(0) if snapshot else client.device_info())

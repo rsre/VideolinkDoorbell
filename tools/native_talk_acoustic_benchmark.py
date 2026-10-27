@@ -14,7 +14,7 @@ import struct
 import sys
 import time
 import wave
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -184,7 +184,7 @@ class HomeAssistantNativeTone:
                         if event.get("type") == "videolink_doorbell/native_talk_raw":
                             if self._raw_dump_file is not None:
                                 self._raw_dump_file.write(json.dumps({
-                                    "received_at_utc": datetime.now(timezone.utc).isoformat(),
+                                    "received_at_utc": datetime.now(UTC).isoformat(),
                                     **event,
                                 }) + "\n")
                                 self.raw_dump_count += 1
@@ -606,7 +606,7 @@ async def benchmark(args: argparse.Namespace) -> int:
     summary = summarize(runs)
     report = {
         "schema_version": 1,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "measurement": "HA tone request to confirmed 440 Hz in doorbell RTSP microphone audio",
         "limitations": "Includes WebSocket, native send, speaker, microphone, RTSP, and FFmpeg delay; excludes browser microphone capture.",
         "native_mix_measurement": "HA tone request to confirmed 440 Hz in decoded camera-microphone native mix WebSocket events",

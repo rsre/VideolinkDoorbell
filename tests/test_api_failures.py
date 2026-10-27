@@ -3,7 +3,7 @@
 import json
 import sys
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 
@@ -73,7 +73,7 @@ class Session:
 def client_for(*responses):
     client = api.VideolinkClient(Session(*responses), "camera.local", "user", "password")
     client._token = "old-secret-token"
-    client._token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    client._token_expires = datetime.now(UTC) + timedelta(hours=1)
     return client
 
 

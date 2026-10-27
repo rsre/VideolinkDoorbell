@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 
@@ -50,7 +50,7 @@ async def test_http_errors_do_not_expose_tokens(snapshot: bool) -> None:
 
     client = api.VideolinkClient(Session(), "camera.local", "user", "password")
     client._token = "secret-sentinel"
-    client._token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    client._token_expires = datetime.now(UTC) + timedelta(hours=1)
     with pytest.raises(api.VideolinkConnectionError) as caught:
         if snapshot:
             await client.snapshot(0)
@@ -146,7 +146,7 @@ async def test_concurrent_token_requests_share_one_login() -> None:
             self.login_count += 1
             await asyncio.sleep(0)
             self._token = "token"
-            self._token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+            self._token_expires = datetime.now(UTC) + timedelta(hours=1)
 
     client = Client(object(), "camera.local", "user", "password")
     assert await asyncio.gather(client.ensure_login(), client.ensure_login()) == [

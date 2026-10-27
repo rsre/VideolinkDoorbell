@@ -127,7 +127,7 @@ class RtspAudioCapture:
         while not stop.is_set():
             try:
                 chunk = await asyncio.wait_for(self.process.stdout.read(4096), 0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if not chunk:
                 break
@@ -176,7 +176,7 @@ class RtspAudioCapture:
             self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), 2)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.process.kill()
                 await self.process.wait()
         if self.player is not None:

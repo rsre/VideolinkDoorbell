@@ -12,7 +12,7 @@ import time
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -111,7 +111,7 @@ class VideolinkClient:
         self.port = port
         self.verify_ssl = verify_ssl
         self._token: str | None = None
-        self._token_expires = datetime.min.replace(tzinfo=timezone.utc)
+        self._token_expires = datetime.min.replace(tzinfo=UTC)
         self._rtmp_port: int | None = None
         self._login_lock = asyncio.Lock()
         self._native_talk: NativeTalkChannel | None = None
@@ -242,7 +242,7 @@ class VideolinkClient:
             raise VideolinkAuthError("Camera did not return a login token")
         try:
             lease = max(60, int(token_data.get("leaseTime", 3600)))
-            expires = datetime.now(timezone.utc) + timedelta(seconds=lease - 30)
+            expires = datetime.now(UTC) + timedelta(seconds=lease - 30)
         except (OverflowError, TypeError, ValueError):
             self._token = None
             raise VideolinkError("Camera returned an invalid token lifetime") from None
@@ -251,11 +251,11 @@ class VideolinkClient:
 
     async def ensure_login(self) -> str:
         """Return a valid API token, renewing it shortly before expiry."""
-        if self._token is None or datetime.now(timezone.utc) >= self._token_expires:
+        if self._token is None or datetime.now(UTC) >= self._token_expires:
             async with self._login_lock:
                 if (
                     self._token is None
-                    or datetime.now(timezone.utc) >= self._token_expires
+                    or datetime.now(UTC) >= self._token_expires
                 ):
                     await self.login()
         assert self._token is not None

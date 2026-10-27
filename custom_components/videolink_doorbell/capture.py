@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ class CapturedFrame:
     def as_dict(self) -> dict:
         header = self.header
         return {
-            "received_at_utc": datetime.fromtimestamp(self.received_ns / 1_000_000_000, timezone.utc).isoformat(),
+            "received_at_utc": datetime.fromtimestamp(self.received_ns / 1_000_000_000, UTC).isoformat(),
             "message_id": header.message_id,
             "response_code": header.response_code,
             "message_class": header.message_class,
