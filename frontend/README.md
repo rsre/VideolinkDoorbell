@@ -56,7 +56,6 @@ entity: camera.your_videolink_camera
 card_style: kiosk
 button_entity: button.open_gate
 button_label: Open gate
-ring_duration: 120
 ```
 
 Shows full-width video with height determined by the stream's native aspect
@@ -71,8 +70,7 @@ the controls at the bottom, with safe-area spacing. Content taller than the
 screen remains scrollable. Debug diagnostics appear above the controls.
 
 A short two-note ring repeats every two seconds when the card first becomes
-visible, including when a conditional card or popup opens. It stops after
-`ring_duration` seconds (default: `120`, minimum: `1`; whole seconds only).
+visible, including when a conditional card or popup opens. There is no timeout.
 Pressing PTT or the
 configured button stops it immediately, even if that action later fails. Closing
 the card or hiding the browser tab also stops ringing. Removing and reopening
@@ -89,8 +87,8 @@ Ring sound errors appear in a red warning bar at the bottom of the video feed.
 
 Set `debug: true` to show a **Play ring** button in **Stream diagnostics**.
 Tap it to test the chime directly, including after automatic audio was blocked.
-The test ring uses the same duration limit and stops sooner if you press PTT
-or the configured button, or close the card.
+The test ring repeats until you press PTT or the configured button, or close
+the card.
 
 ## Maintain the HACS bundle
 
