@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.13.7";
+const CARD_VERSION = "0.13.10";
 
 class VideolinkDoorbellCard extends HTMLElement {
   constructor() {
@@ -255,6 +255,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     document.addEventListener("keydown", this._spaceKeyDown);
     document.addEventListener("keyup", this._spaceKeyUp, true);
     window.addEventListener("blur", this._windowBlurHandler);
+    window.addEventListener("resize", this._updateKioskHeight);
+    window.visualViewport?.addEventListener("resize", this._updateKioskHeight);
   }
 
   disconnectedCallback() {
@@ -264,6 +266,8 @@ class VideolinkDoorbellCard extends HTMLElement {
     document.removeEventListener("keydown", this._spaceKeyDown);
     document.removeEventListener("keyup", this._spaceKeyUp, true);
     window.removeEventListener("blur", this._windowBlurHandler);
+    window.removeEventListener("resize", this._updateKioskHeight);
+    window.visualViewport?.removeEventListener("resize", this._updateKioskHeight);
     this._traceTalk("Card disconnected; cleaning up talk");
     this._bindHaConnection();
     this._queueHaCleanup("clean up stream");
@@ -493,20 +497,34 @@ class VideolinkDoorbellCard extends HTMLElement {
     }
   };
 
+  _updateKioskHeight = () => {
+    if (!this._kiosk || !this.isConnected || !this.style || !this.getBoundingClientRect) return;
+    const viewport = window.visualViewport;
+    const height = viewport?.height ?? window.innerHeight;
+    const top = this.getBoundingClientRect().top - (viewport?.offsetTop ?? 0);
+    this.style.setProperty("--videolink-kiosk-height", `${Math.max(0, height - Math.max(0, top))}px`);
+  };
+
   _render() {
     if (!this.shadowRoot || !this._config) return;
     const audioOnly = this._audioOnly;
+    const diagnostics = this._config.debug ? `<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre>
+      ${this._kiosk ? '<button class="play-ring" type="button">Play ring</button>' : ""}
+      <button class="copy-diagnostics" type="button">Copy diagnostics</button></details>` : "";
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
         ha-card { overflow: hidden; background: var(--ha-card-background, var(--card-background-color)); }
+        ha-card.kiosk { display: flex; flex-direction: column; box-sizing: border-box;
+          min-height: var(--videolink-kiosk-height, calc(100dvh - var(--header-height, 56px))); }
+        .kiosk > * { flex-shrink: 0; }
         .header { padding: 12px 16px; font-size: 16px; font-weight: 500; }
         .audio-only .header { padding-bottom: 0; }
         .stage { position: relative; background: #000; aspect-ratio: 16 / 9; }
-        .stage.fit-full { aspect-ratio: auto; }
+        .stage.fit-full, .kiosk .stage { aspect-ratio: auto; }
         .stage.popup-enabled { cursor: pointer; }
         video { width: 100%; height: 100%; display: block; object-fit: ${this._config.video_fit}; background: #000; }
-        .stage.fit-full video { height: auto; object-fit: contain; }
+        .stage.fit-full video, .kiosk .stage video { height: auto; object-fit: contain; }
         audio { display: none; }
         .status { position: absolute; inset: auto 10px 10px; padding: 6px 9px; border-radius: 6px;
           color: white; background: rgba(0,0,0,.68); font-size: 12px; pointer-events: none; }
@@ -517,8 +535,10 @@ class VideolinkDoorbellCard extends HTMLElement {
           color: var(--warning-color, #fbd150); background: color-mix(in srgb, var(--warning-color, #fbd150) 14%, transparent);
           font-size: 13px; line-height: 1.4; }
         .controls { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; }
-        .kiosk .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .kiosk .controls button { min-width: 0; min-height: 56px; height: auto; padding: 12px; overflow-wrap: anywhere; }
+        .kiosk .controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px;
+          margin-top: auto; padding-bottom: max(16px, env(safe-area-inset-bottom, 0px)); }
+        .kiosk .controls button { width: 100%; min-width: 0; min-height: 96px; height: auto;
+          padding: 20px; font-size: 20px; overflow-wrap: anywhere; }
         .sound-status { position: absolute; top: 10px; right: 10px; z-index: 1;
           display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%;
           color: white; background: rgba(0,0,0,.68); }
@@ -573,15 +593,14 @@ class VideolinkDoorbellCard extends HTMLElement {
         </div>`}
         ${this._kiosk ? '<div class="button-error" role="alert"></div>' : ""}
         ${window.isSecureContext || this._controlsHidden ? "" : '<div class="security-warning" role="alert">HTTPS is required for microphone access. Open Home Assistant through a secure HTTPS address to use push-to-talk.</div>'}
+        ${this._kiosk ? diagnostics : ""}
         ${this._controlsHidden ? "" : `<div class="controls">
           ${this._kiosk ? "" : '<button class="sound" type="button" title="Enable camera audio" aria-label="Enable camera audio">🔇</button>'}
           <button class="talk" type="button" aria-label="Hold to talk" aria-keyshortcuts="Space Enter">Hold to talk</button>
           ${this._kiosk ? '<button class="proxy" type="button"></button>' : ""}
           ${!this._kiosk && this._config.talk_mode === "native" && this._config.debug ? '<button class="tone" type="button" title="Send a one-second test tone" aria-label="Send test tone">Test tone</button>' : ""}
         </div>`}
-        ${this._config.debug ? `<details class="diagnostics" open><summary>Stream diagnostics</summary><pre></pre>
-          ${this._kiosk ? '<button class="play-ring" type="button">Play ring</button>' : ""}
-          <button class="copy-diagnostics" type="button">Copy diagnostics</button></details>` : ""}
+        ${this._kiosk ? "" : diagnostics}
       </ha-card>`;
 
     this._video = this.shadowRoot.querySelector("video, audio");
@@ -630,13 +649,15 @@ class VideolinkDoorbellCard extends HTMLElement {
     this._updateDiagnosticsView();
     if (this._config.debug && this._peer) this._startDiagnostics();
     else if (!this._config.debug) this._stopDiagnostics();
+    this._updateKioskHeight();
   }
 
   _attachRemoteStream() {
     if (!this._video || !this._remoteStream) return;
     const video = this._video;
     const stream = this._remoteStream;
-    video.srcObject = stream;
+    // Reassigning even the same stream resets video playback during PTT.
+    if (video.srcObject !== stream) video.srcObject = stream;
     video.muted = this._muted || this._nativeUsesMix;
     video.play().catch((error) => {
       if (video !== this._video || stream !== this._remoteStream || error?.name === "AbortError") return;

@@ -612,7 +612,17 @@ for (const mode of ["rtsp", "native"]) {
     const env = keyboardEnvironment(t);
     const card = env.card(mode);
     card._config.card_style = "kiosk";
-    card._video = { muted: true };
+    let source;
+    let attachments = 0;
+    card._video = {
+      muted: true,
+      get srcObject() { return source; },
+      set srcObject(stream) { source = stream; attachments += 1; },
+      play: () => Promise.resolve(),
+    };
+    card._remoteStream = {};
+    card._attachRemoteStream();
+    assert.equal(attachments, 1);
     card._muted = true;
     card._audioBlocked = true;
     env.key("keydown");
@@ -621,14 +631,27 @@ for (const mode of ["rtsp", "native"]) {
     assert.equal(card._muted, true);
     assert.equal(card._video.muted, true);
     assert.equal(card._audioBlocked, false);
+    assert.equal(attachments, 1, "PTT press must not reattach the video stream");
     env.key("keyup");
     await env.flush();
     assert.equal(card._talking, false);
     assert.equal(card._muted, false);
     assert.equal(card._video.muted, false);
     assert.equal(card.tracks[0].readyState, "ended");
+    assert.equal(attachments, 1, "PTT release must not reattach the video stream");
   });
 }
+
+test("video attachment still updates when the remote stream changes", () => {
+  const card = new CardUnderTest();
+  card._video = { play: () => Promise.resolve() };
+  const first = card._remoteStream = {};
+  card._attachRemoteStream();
+  assert.equal(card._video.srcObject, first);
+  const second = card._remoteStream = {};
+  card._attachRemoteStream();
+  assert.equal(card._video.srcObject, second);
+});
 
 test("audio-only packetization preserves valid SDP line termination", () => {
   const card = new CardUnderTest();

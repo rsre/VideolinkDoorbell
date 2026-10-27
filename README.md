@@ -104,7 +104,10 @@ not restart it. Use a conditional card or popup to display it when a visitor rin
 An always-visible kiosk card rings when the dashboard opens, rather than on
 every doorbell event.
 
-Under the video are two buttons: **Hold to talk** (hold to transmit, release to
+The video spans the card's full width, with height determined by the stream's
+native aspect ratio. Under it are two vertically stacked buttons, each at least
+96px tall, anchored to the bottom of the available screen below the Home
+Assistant header: **Hold to talk** (hold to transmit, release to
 stop, with the same Space shortcut) and the configured Home Assistant button.
 The second button calls `button.press`; it is disabled until `button_entity`
 is configured and available. `button_label` defaults to the entity's friendly
@@ -152,7 +155,8 @@ button, or close the card.
   the Baichuan mix when playable frames arrive. The card falls back to the
   WebRTC camera-audio track if native mix is unavailable, silent at startup, or
   stops. The app's proprietary AEC is not used.
-- `video_fit` controls the video layout (default is `contain`):
+- `video_fit` controls the video layout (default is `contain`); kiosk cards always
+  use the stream's native aspect ratio:
   - `contain` scales the entire frame with letterboxing,
   - `cover` crops it,
   - `fill` stretches it,

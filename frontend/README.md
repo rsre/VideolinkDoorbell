@@ -59,12 +59,16 @@ button_label: Open gate
 ring_duration: 120
 ```
 
-Shows the video, a read-only SVG speaker icon in the video's top-right corner,
-and two controls:
+Shows full-width video with height determined by the stream's native aspect
+ratio, a read-only SVG speaker icon in the video's top-right corner, and two
+vertically stacked controls, each at least 96px tall:
 **Hold to talk** and a proxy for the configured Home Assistant `button.*`
 entity. The proxy uses `button.press` and defaults to the entity's friendly
 name when `button_label` is omitted. Missing or unavailable buttons are disabled.
 Both controls acknowledge the repeating ring when pressed.
+The card fills the available screen below the Home Assistant header and anchors
+the controls at the bottom, with safe-area spacing. Content taller than the
+screen remains scrollable. Debug diagnostics appear above the controls.
 
 A short two-note ring repeats every two seconds when the card first becomes
 visible, including when a conditional card or popup opens. It stops after
