@@ -161,4 +161,7 @@ jobs:
           python -m pip install -r requirements-ha-test.txt
           python -m pip install --upgrade --pre pytest-homeassistant-custom-component reolink-aio
           python -m pip install --upgrade 'homeassistant @ git+https://github.com/home-assistant/core.git@dev'
-      - run: python -m pytest -q tests/ha tests/test_event.py
+      # Core installs its httpx aliases before pytest plugins import respx/httpx.
+      - run: >-
+          python -c 'import homeassistant; import pytest; raise SystemExit(pytest.main())'
+          -q tests/ha tests/test_event.py
