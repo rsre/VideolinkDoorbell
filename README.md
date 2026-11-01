@@ -345,6 +345,10 @@ python3.14 -m venv .venv-ha
 These tests exercise real entry setup, scheduled retries, entity registration,
 reauthentication and repeated reload/unload cycles with mocked device I/O.
 
+Scheduled compatibility CI follows the newest published fixture package,
+including beta Core releases when available. Core stays at the version pinned
+by that package so its test helpers match Core's internal APIs.
+
 The browser suite additionally needs Node.js and Chromium. It runs the actual
 card against Home Assistant's HTTP/WebSocket server using the official HA
 connection library. Native device I/O is simulated; WebRTC uses a real browser
