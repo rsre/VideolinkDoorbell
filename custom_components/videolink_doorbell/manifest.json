@@ -1,6 +1,7 @@
 {
   "domain": "videolink_doorbell",
   "name": "Videolink Doorbell",
+  "categories": ["security_safety.doorbells_intercoms"],
   "codeowners": ["@rsre"],
   "config_flow": true,
   "dependencies": ["frontend", "go2rtc", "http", "lovelace", "stream", "websocket_api"],
