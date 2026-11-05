@@ -109,6 +109,11 @@ class VideolinkStreams:
             )
 
     @property
+    def backchannel_available(self) -> bool:
+        """Whether the RTSP producer can carry WebRTC microphone audio."""
+        return self._registration.backchannel_available
+
+    @property
     def backchannel_url(self) -> str:
         return self._runtime.client.rtsp_backchannel_url(self._channel, self._stream, self._rtsp_port)
 

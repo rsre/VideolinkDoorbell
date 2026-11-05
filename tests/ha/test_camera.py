@@ -180,3 +180,73 @@ async def test_failed_initial_source_recovers_on_health_interval(camera):
     await camera._sources.async_refresh_active()
     assert camera.available
     camera._client.snapshot.assert_not_awaited()
+
+
+def test_camera_capabilities_on_older_core(camera, monkeypatch):
+    from homeassistant.components import camera as core_camera
+
+    monkeypatch.delattr(core_camera, "CameraEntityCapabilities", raising=False)
+    assert camera.camera_entity_capabilities is None
+    assert camera.extra_state_attributes["rtsp_talk_available"]
+
+
+@pytest.mark.parametrize("labs_enabled", [False, True])
+@pytest.mark.parametrize("webrtc_available", [False, True])
+def test_builtin_talk_requires_labs_and_webrtc(
+    camera, monkeypatch, labs_enabled, webrtc_available
+):
+    import sys
+
+    from homeassistant.components import camera as core_camera
+
+    if not hasattr(core_camera, "CameraEntityCapabilities"):
+        pytest.skip("Built-in talk requires Home Assistant 2026.11+")
+    camera._webrtc_provider = SimpleNamespace(domain="go2rtc") if webrtc_available else None
+    camera_module = sys.modules[core_camera.Camera.__module__]
+    monkeypatch.setattr(
+        camera_module, "async_is_preview_feature_enabled", lambda *args: labs_enabled
+    )
+    assert camera.camera_entity_capabilities.two_way_audio
+    assert camera.camera_capabilities.two_way_audio is (labs_enabled and webrtc_available)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("video_source", ["flv", "rtsp"])
+async def test_builtin_talk_tracks_backchannel_failure_and_recovery(
+    camera, monkeypatch, video_source
+):
+    from homeassistant.components import camera as core_camera
+
+    from custom_components.videolink_doorbell import go2rtc as adapter
+
+    if not hasattr(core_camera, "CameraEntityCapabilities"):
+        pytest.skip("Built-in talk requires Home Assistant 2026.11+")
+    # The legacy adapter is still used by Core 2026.11. Exercise its real
+    # registration path, including a failed provider discovery and retry.
+    monkeypatch.setattr(adapter, "supports_multiple_sources", lambda: False)
+    monkeypatch.setattr(adapter, "get_streams_api", Mock(return_value=None))
+    monkeypatch.setattr(adapter, "async_oriented_video_source", AsyncMock(side_effect=lambda hass, entity_id, url: url))
+    camera.entity_id = "camera.front"
+    camera.platform = SimpleNamespace(platform_name="videolink_doorbell")
+    camera._sources._source = video_source
+    registration = camera._sources._registration
+    registration.async_ensure = adapter.Go2RtcRegistration.async_ensure.__get__(registration)
+
+    assert camera.camera_entity_capabilities.two_way_audio
+    await camera.stream_source()
+    assert not camera.camera_entity_capabilities.two_way_audio
+    assert not camera.extra_state_attributes["rtsp_talk_available"]
+    camera.async_write_ha_state.assert_called_once()
+
+    streams = SimpleNamespace(list=AsyncMock(return_value={}), add=AsyncMock())
+    adapter.get_streams_api.return_value = streams
+    await camera.stream_source()
+    assert camera.camera_entity_capabilities.two_way_audio
+    assert camera.extra_state_attributes["rtsp_talk_available"]
+    assert camera.async_write_ha_state.call_count == 2
+    sources = streams.add.call_args.args[1]
+    assert sources[0] == (
+        "https://camera.local/flv?token=old" if video_source == "flv"
+        else "rtsp://camera.local/video"
+    )
+    assert "rtsp://camera.local/backchannel" in sources

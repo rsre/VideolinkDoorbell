@@ -2,6 +2,14 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
+## [Unreleased]
+
+- Support Home Assistant 2026.11's built-in two-way audio control through the
+  existing go2rtc RTSP backchannel with either FLV or RTSP video. Reflect
+  backchannel registration failures and recovery in the camera capabilities.
+- Document enabling the Labs preview, HTTPS microphone access, and RTSP setup.
+  Keep compatibility with earlier Home Assistant versions and the custom card.
+
 ## [0.13.0] - 2026-10-27
 
 - Add dashboard card 0.13.11 with a kiosk style: video, a ring on first display,

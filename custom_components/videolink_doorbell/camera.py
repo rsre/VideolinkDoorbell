@@ -8,6 +8,7 @@ _LOGGER = logging.getLogger(__name__)
 # On-demand I/O is bounded by the client snapshot semaphore and stream lock.
 PARALLEL_UPDATES = 0
 
+from homeassistant.components import camera as camera_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -60,7 +61,18 @@ class VideolinkWebCamera(Camera):
     @property
     def extra_state_attributes(self) -> dict[str, bool]:
         """Disable RTSP talk when the compatibility adapter reports failure."""
-        return {"rtsp_talk_available": self._sources._registration.backchannel_available}
+        return {"rtsp_talk_available": self._sources.backchannel_available}
+
+    @property
+    def camera_entity_capabilities(self) -> camera_platform.CameraEntityCapabilities | None:
+        """Expose the RTSP backchannel to Core's built-in WebRTC talk control."""
+        # Keep supporting Core versions before the 2026.11 capability API.
+        capabilities = getattr(camera_platform, "CameraEntityCapabilities", None)
+        if capabilities is None:
+            return None
+        # Both preview protocols have a separate, untransformed RTSP producer.
+        # Read health dynamically so registration failure/recovery is reflected.
+        return capabilities(two_way_audio=self._sources.backchannel_available)
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None

@@ -63,6 +63,25 @@ signal must be available on the configured channel for rings to appear.
 
 ## Card
 
+### Home Assistant's built-in talk control (2026.11+)
+
+Enable **Two-way audio** under **Settings → System → Labs**, then open the
+camera's live stream in Home Assistant's camera dialog or a built-in camera
+card. Use its talk button to speak through the doorbell. Open Home Assistant
+over HTTPS and allow microphone access; the stream must use WebRTC through
+Home Assistant's go2rtc integration. HLS playback cannot carry microphone audio.
+
+Enable RTSP on the doorbell and make its configured RTSP port (554 by default)
+reachable from Home Assistant/go2rtc. Both FLV and RTSP video previews support
+this control: the integration supplies a separate RTSP audio backchannel even
+when video uses FLV. The built-in control uses this RTSP path; the experimental
+Baichuan `native` talk mode remains available in the custom card below.
+
+Earlier Home Assistant versions can continue using the bundled custom card.
+See Home Assistant's [two-way audio release notes](https://www.home-assistant.io/blog/2026/11/04/release-202611/#talk-back-through-your-cameras).
+
+### Bundled custom card
+
 The integration bundles and automatically registers the **Videolink Doorbell** dashboard card. Add it through the dashboard card picker, or use YAML:
 
 ```yaml
@@ -344,6 +363,11 @@ python3.14 -m venv .venv-ha
 
 These tests exercise real entry setup, scheduled retries, entity registration,
 reauthentication and repeated reload/unload cycles with mocked device I/O.
+
+The `camera-talk-tests` CI job also runs the camera and provider tests directly
+against Core 2026.11.0, without loading the older lifecycle fixture plugin. It
+checks built-in talk capability gating and backchannel failure/recovery for
+both video protocols.
 
 Scheduled compatibility CI follows the newest published fixture package,
 including beta Core releases when available. Core stays at the version pinned
